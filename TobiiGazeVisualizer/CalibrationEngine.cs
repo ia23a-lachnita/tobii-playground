@@ -10,11 +10,13 @@ namespace TobiiGazeVisualizer;
 /// </summary>
 public class CalibrationEngine
 {
+    // Inset calibration dots to stay within tracker FOV (top-left freezes at edges)
+    // 10% horizontal inset, 12% vertical inset
     public static readonly (double x, double y)[] GridTargets =
     [
-        (0.15, 0.15), (0.5, 0.15), (0.85, 0.15),
-        (0.15, 0.5),  (0.5, 0.5),  (0.85, 0.5),
-        (0.15, 0.85), (0.5, 0.85), (0.85, 0.85)
+        (0.25, 0.27), (0.5, 0.27), (0.75, 0.27),
+        (0.25, 0.5),  (0.5, 0.5),  (0.75, 0.5),
+        (0.25, 0.73), (0.5, 0.73), (0.75, 0.73)
     ];
 
     const double HARD_FAIL_MEAN_ERROR = 2.5;

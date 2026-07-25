@@ -19,7 +19,6 @@ public class CalibrationForm : Form
     CalibrationResult? _result;
 
     int _currentPoint;
-    bool _collecting;
     DateTime _phaseStart; // start of current phase
 
     // Phase states

@@ -70,13 +70,12 @@ public class TobiiUsb : IDisposable
     Thread? _readThread;
     CancellationTokenSource? _cts;
 
-    // Display area: shifted to match tracker's actual FOV center
-    // Tracker can see more right/down than left/up, so shift area right and down
+    // Display area: Acer Nitro VG272S with Tobii 5L bottom-center mount
     const double MONITOR_W_MM = 597.9;
     const double MONITOR_H_MM = 336.2;
-    const double MONITOR_Y_OFFSET_MM = -5.0;  // shift down (negative = below tracker center)
-    const double MONITOR_Z_MM = -10.0;
-    const double MONITOR_X_SHIFT_MM = 25.0;   // shift right to compensate for tracker being left of center
+    const double MONITOR_Y_BOTTOM_MM = 15.0;  // active pixels start 15mm ABOVE tracker center
+    const double MONITOR_Z_MM = -10.0;        // display panel is 10mm BEHIND tracker front face
+    const double MONITOR_X_SHIFT_MM = 0.0;    // centered horizontally
 
     public bool Connect()
     {
@@ -129,9 +128,9 @@ public class TobiiUsb : IDisposable
         SendRequest(0x640, new byte[] { 0x00, 0x00 });
         ReadResponse();
 
-        // SET display area - shifted to match tracker FOV
+        // SET display area - correct geometry for bottom-center mount
         double leftEdge = -MONITOR_W_MM / 2 + MONITOR_X_SHIFT_MM;
-        SetDisplayArea(MONITOR_W_MM, MONITOR_H_MM, leftEdge, MONITOR_Y_OFFSET_MM, MONITOR_Z_MM);
+        SetDisplayArea(MONITOR_W_MM, MONITOR_H_MM, leftEdge, MONITOR_Y_BOTTOM_MM, MONITOR_Z_MM);
 
         // GET display area (confirm)
         SendRequest(0x596, Array.Empty<byte>());
