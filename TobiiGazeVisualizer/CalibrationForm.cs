@@ -304,8 +304,7 @@ public class CalibrationForm : Form
         // Progress arc during collection
         if (_phase == Phase.Collect)
         {
-            float progress = Math.Clamp(
-                (float)(DateTime.UtcNow - _phaseStart).TotalMilliseconds / COLLECT_MAX_MS, 0, 1);
+            float progress = Math.Clamp((float)_validSampleCount / SAMPLE_QUOTA, 0, 1);
             using var progressPen = new Pen(Color.LimeGreen, 3);
             g.DrawArc(progressPen, tx - _targetSize, ty - _targetSize, _targetSize * 2, _targetSize * 2,
                 -90, progress * 360);

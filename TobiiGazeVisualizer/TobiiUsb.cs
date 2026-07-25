@@ -71,8 +71,9 @@ public class TobiiUsb : IDisposable
     CancellationTokenSource? _cts;
 
     // Display area: Acer Nitro VG272S with Tobii 5L bottom-center mount
+    // Height reduced to 285mm so top of configured area stays within tracker's 40° vertical FOV
     const double MONITOR_W_MM = 597.9;
-    const double MONITOR_H_MM = 336.2;
+    const double MONITOR_H_MM = 285.0;       // reduced from 336.2 to fit FOV
     const double MONITOR_Y_BOTTOM_MM = 15.0;  // active pixels start 15mm ABOVE tracker center
     const double MONITOR_Z_MM = -10.0;        // display panel is 10mm BEHIND tracker front face
     const double MONITOR_X_SHIFT_MM = 0.0;    // centered horizontally
