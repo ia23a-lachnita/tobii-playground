@@ -1,0 +1,153 @@
+﻿using System;
+using System.Threading;
+using Tobii.StreamEngine;
+
+class Program
+{
+    static IEyeTracker? _tracker;
+    static int _gazeCount;
+    static int _headPoseCount;
+    static int _presenceCount;
+    static DateTime _startTime;
+
+    static void Main(string[] args)
+    {
+        Console.WriteLine("Tobii Eye Tracker 5L - Gaze Demo");
+        Console.WriteLine("================================");
+        Console.WriteLine();
+
+        // Initialize the Tobii Stream Engine API
+        EyeTrackerFactory.Init(null);
+        Console.WriteLine("[OK] Tobii Stream Engine initialized");
+
+        // List available eye trackers
+        Console.WriteLine();
+        Console.WriteLine("Searching for eye trackers...");
+        var urls = EyeTrackerFactory.ListEyeTrackers();
+
+        if (urls.Count == 0)
+        {
+            Console.WriteLine("[FAIL] No eye trackers found!");
+            Console.WriteLine();
+            Console.WriteLine("Make sure:");
+            Console.WriteLine("  1. The Tobii Eye Tracker 5L is connected via USB");
+            Console.WriteLine("  2. The Tobii Platform Runtime service is running");
+            Console.WriteLine("     (Run 'sc query TobiiPlatformRuntime' to check)");
+            Console.WriteLine();
+            EyeTrackerFactory.Terminate();
+            return;
+        }
+
+        Console.WriteLine($"[OK] Found {urls.Count} eye tracker(s):");
+        foreach (var url in urls)
+        {
+            Console.WriteLine($"     {url}");
+        }
+
+        // Connect to the first eye tracker
+        var url0 = urls[0];
+        Console.WriteLine();
+        Console.WriteLine($"Connecting to: {url0}");
+
+        try
+        {
+            _tracker = EyeTrackerFactory.Create(url0);
+        }
+        catch (TobiiApiException ex)
+        {
+            Console.WriteLine($"[FAIL] Failed to connect: {ex.Message}");
+            EyeTrackerFactory.Terminate();
+            return;
+        }
+
+        Console.WriteLine("[OK] Connected!");
+
+        // Get device info
+        var info = _tracker.GetDeviceInfo();
+        Console.WriteLine();
+        Console.WriteLine("Device Info:");
+        Console.WriteLine($"  Model:            {info.model}");
+        Console.WriteLine($"  Serial Number:    {info.serial_number}");
+        Console.WriteLine($"  Firmware Version: {info.firmware_version}");
+        Console.WriteLine($"  Generation:       {info.generation}");
+        Console.WriteLine($"  Integration Type: {info.integration_type}");
+
+        // Subscribe to data streams using delegates
+        Console.WriteLine();
+        Console.WriteLine("Subscribing to data streams...");
+
+        _tracker.GazePoint += (ref tobii_gaze_point_t data, IntPtr _) =>
+        {
+            if (data.validity == tobii_validity_t.TOBII_VALIDITY_VALID)
+            {
+                _gazeCount++;
+            }
+        };
+
+        _tracker.HeadPose += (ref tobii_head_pose_t data, IntPtr _) =>
+        {
+            if (data.position_validity == tobii_validity_t.TOBII_VALIDITY_VALID)
+            {
+                _headPoseCount++;
+            }
+        };
+
+        _tracker.UserPresence += (tobii_user_presence_status_t status, long timestampUs, IntPtr _) =>
+        {
+            _presenceCount++;
+        };
+
+        Console.WriteLine("  [OK] Gaze point");
+        Console.WriteLine("  [OK] Head pose");
+        Console.WriteLine("  [OK] User presence");
+
+        // Start processing callbacks
+        _tracker.StartProcessingCallbacks();
+        _startTime = DateTime.UtcNow;
+
+        Console.WriteLine();
+        Console.WriteLine("Reading eye tracking data... (Press Ctrl+C to stop)");
+        Console.WriteLine("===================================================");
+
+        // Handle Ctrl+C
+        var cts = new CancellationTokenSource();
+        Console.CancelKeyPress += (_, e) =>
+        {
+            e.Cancel = true;
+            cts.Cancel();
+        };
+
+        // Main loop
+        try
+        {
+            while (!cts.Token.IsCancellationRequested)
+            {
+                Thread.Sleep(500);
+
+                var elapsed = (DateTime.UtcNow - _startTime).TotalSeconds;
+                if (elapsed > 0)
+                {
+                    var gazeRate = _gazeCount / elapsed;
+                    Console.Write($"\r  Gaze: {_gazeCount,6} ({gazeRate:F1}/s) | Head: {_headPoseCount,6} | Presence: {_presenceCount,3}   ");
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+
+        // Cleanup
+        Console.WriteLine();
+        Console.WriteLine();
+        Console.WriteLine("Stopping...");
+
+        _tracker.StopProcessingCallbacks();
+        _tracker.Dispose();
+        EyeTrackerFactory.Terminate();
+
+        Console.WriteLine("[OK] Done!");
+        Console.WriteLine();
+        var totalTime = (DateTime.UtcNow - _startTime).TotalSeconds;
+        Console.WriteLine($"Session: {totalTime:F1}s | Gaze: {_gazeCount} ({_gazeCount / totalTime:F1}/s) | Head: {_headPoseCount} | Presence: {_presenceCount}");
+    }
+}
