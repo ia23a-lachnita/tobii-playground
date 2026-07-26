@@ -70,13 +70,13 @@ public class TobiiUsb : IDisposable
     Thread? _readThread;
     CancellationTokenSource? _cts;
 
-    // Display area: conservative estimate of tracker's actual FOV
-    // Reduced dimensions to ensure all edges are within tracking range
-    const double MONITOR_W_MM = 380.0;       // conservative horizontal FOV
-    const double MONITOR_H_MM = 250.0;       // conservative vertical FOV
-    const double MONITOR_Y_BOTTOM_MM = 30.0; // shift up to cover top edge
+    // Display area: full physical screen dimensions (correct mapping)
+    // Freeze zones at edges are hardware FOV limits - handled by calibration extrapolation
+    const double MONITOR_W_MM = 597.9;
+    const double MONITOR_H_MM = 336.2;
+    const double MONITOR_Y_BOTTOM_MM = 15.0;
     const double MONITOR_Z_MM = -10.0;
-    const double MONITOR_X_SHIFT_MM = 15.0;  // shift right to balance left/right
+    const double MONITOR_X_SHIFT_MM = 0.0;
 
     public bool Connect()
     {

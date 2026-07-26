@@ -10,13 +10,14 @@ namespace TobiiGazeVisualizer;
 /// </summary>
 public class CalibrationEngine
 {
-    // Inset calibration dots to stay within tracker FOV (top-left freezes at edges)
-    // 10% horizontal inset, 12% vertical inset
+    // 5-point calibration: 4 inset corners + center
+    // Positioned at 12%-88% horizontal, 10%-90% vertical (within tracker FOV)
+    // Polynomial extrapolates from these points to full screen edges
     public static readonly (double x, double y)[] GridTargets =
     [
-        (0.25, 0.27), (0.5, 0.27), (0.75, 0.27),
-        (0.25, 0.5),  (0.5, 0.5),  (0.75, 0.5),
-        (0.25, 0.73), (0.5, 0.73), (0.75, 0.73)
+        (0.12, 0.10), (0.88, 0.10),
+        (0.50, 0.50),
+        (0.12, 0.90), (0.88, 0.90)
     ];
 
     const double HARD_FAIL_MEAN_ERROR = 2.5;
@@ -225,7 +226,7 @@ public class CalibrationEngine
         }
 
         result.PointsCollected = validPoints;
-        result.PointsFailed = 9 - validPoints;
+        result.PointsFailed = GridTargets.Length - validPoints;
 
         if (validPoints < MIN_POINTS_REQUIRED)
         {

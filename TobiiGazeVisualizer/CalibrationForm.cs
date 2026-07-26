@@ -177,7 +177,7 @@ public class CalibrationForm : Form
                         if (IsDisposed) return;
                         BeginInvoke(() =>
                         {
-                            if (_currentPoint < 8)
+                            if (_currentPoint < CalibrationEngine.GridTargets.Length - 1)
                                 StartPoint(_currentPoint + 1);
                             else
                                 FinishCalibration();
@@ -279,9 +279,10 @@ public class CalibrationForm : Form
         g.SmoothingMode = SmoothingMode.AntiAlias;
 
         // Progress dots at top
-        for (int i = 0; i < 9; i++)
+        int pointCount = CalibrationEngine.GridTargets.Length;
+        for (int i = 0; i < pointCount; i++)
         {
-            float px = Width / 2f + (i - 4) * 30;
+            float px = Width / 2f + (i - (pointCount - 1) / 2f) * 30;
             using var dotBrush = new SolidBrush(i < _currentPoint ? Color.LimeGreen :
                 i == _currentPoint ? Color.White : Color.Gray);
             g.FillEllipse(dotBrush, px - 6, 30, 12, 12);
@@ -329,8 +330,8 @@ public class CalibrationForm : Form
         using var brush = new SolidBrush(Color.FromArgb(200, 220, 220, 220));
         string msg = _phase switch
         {
-            Phase.Transit => $"Moving to dot {_currentPoint + 1}/9...",
-            Phase.Settle => $"Hold steady on dot {_currentPoint + 1}/9...",
+            Phase.Transit => $"Moving to dot {_currentPoint + 1}/{CalibrationEngine.GridTargets.Length}...",
+            Phase.Settle => $"Hold steady on dot {_currentPoint + 1}/{CalibrationEngine.GridTargets.Length}...",
             Phase.Collect => $"Look at the dot ({_validSampleCount}/{SAMPLE_QUOTA} samples)",
             _ => "Processing..."
         };
@@ -376,7 +377,7 @@ public class CalibrationForm : Form
         string stats = $"Mean Error: {r.MeanErrorDegrees:F2}°  |  Max Error: {r.MaxErrorDegrees:F2}°  |  RMS: {r.RmsNoiseDegrees:F2}°";
         g.DrawString(stats, font, Brushes.LightGray, cx - 250, cy - 10);
 
-        string points = $"Points: {r.PointsCollected}/9 collected";
+        string points = $"Points: {r.PointsCollected}/{CalibrationEngine.GridTargets.Length} collected";
         g.DrawString(points, font, Brushes.LightGray, cx - 250, cy + 30);
 
         if (r.Quality == CalibrationQuality.Failed)
