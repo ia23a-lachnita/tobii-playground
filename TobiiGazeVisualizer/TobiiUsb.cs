@@ -70,13 +70,13 @@ public class TobiiUsb : IDisposable
     Thread? _readThread;
     CancellationTokenSource? _cts;
 
-    // Display area: matched to tracker's 40° FOV at 60cm distance
-    // Width/height reduced to fit within physical FOV cone
-    const double MONITOR_W_MM = 435.0;       // FOV width at 60cm ≈ 437mm
-    const double MONITOR_H_MM = 315.0;       // slightly reduced from 336mm
-    const double MONITOR_Y_BOTTOM_MM = 15.0; // active pixels start 15mm ABOVE tracker center
-    const double MONITOR_Z_MM = -10.0;       // display panel is 10mm BEHIND tracker front face
-    const double MONITOR_X_SHIFT_MM = 10.0;  // slight right shift to balance FOV
+    // Display area: conservative estimate of tracker's actual FOV
+    // Reduced dimensions to ensure all edges are within tracking range
+    const double MONITOR_W_MM = 380.0;       // conservative horizontal FOV
+    const double MONITOR_H_MM = 250.0;       // conservative vertical FOV
+    const double MONITOR_Y_BOTTOM_MM = 30.0; // shift up to cover top edge
+    const double MONITOR_Z_MM = -10.0;
+    const double MONITOR_X_SHIFT_MM = 15.0;  // shift right to balance left/right
 
     public bool Connect()
     {
