@@ -10,14 +10,13 @@ namespace TobiiGazeVisualizer;
 /// </summary>
 public class CalibrationEngine
 {
-    // 5-point calibration: 4 inset corners + center
-    // Positioned at 12%-88% horizontal, 10%-90% vertical (within tracker FOV)
-    // Polynomial extrapolates from these points to full screen edges
+    // 9-point calibration grid, spread out to cover tracker FOV
+    // 12%-88% horizontal, 10%-90% vertical
     public static readonly (double x, double y)[] GridTargets =
     [
-        (0.12, 0.10), (0.88, 0.10),
-        (0.50, 0.50),
-        (0.12, 0.90), (0.88, 0.90)
+        (0.12, 0.10), (0.50, 0.10), (0.88, 0.10),
+        (0.12, 0.50), (0.50, 0.50), (0.88, 0.50),
+        (0.12, 0.90), (0.50, 0.90), (0.88, 0.90)
     ];
 
     const double HARD_FAIL_MEAN_ERROR = 2.5;
