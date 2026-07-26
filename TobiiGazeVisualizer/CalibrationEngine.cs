@@ -181,8 +181,8 @@ public class CalibrationEngine
 
     static double AngularError(double rawX, double rawY, double targetX, double targetY)
     {
-        double dx = (rawX - targetX) * 597.9;
-        double dy = (rawY - targetY) * 336.2;
+        double dx = (rawX - targetX) * 597.9;  // Full width visible
+        double dy = (rawY - targetY) * 203.0;   // Visible range only (not full 336mm)
         double distMm = 600.0;
         double angleRad = Math.Atan2(Math.Sqrt(dx * dx + dy * dy), distMm);
         return angleRad * 180.0 / Math.PI;
@@ -323,7 +323,7 @@ public class CalibrationEngine
             }
         }
         result.RmsNoiseDegrees = rmsCount > 0
-            ? Math.Sqrt(rmsSum / rmsCount) * 597.9 / 600.0 * (180.0 / Math.PI)
+            ? Math.Sqrt(rmsSum / rmsCount) * Math.Sqrt(597.9 * 203.0) / 600.0 * (180.0 / Math.PI)
             : 99;
 
         // Quality rating (relaxed thresholds)

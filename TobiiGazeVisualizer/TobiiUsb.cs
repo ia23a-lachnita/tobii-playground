@@ -70,10 +70,11 @@ public class TobiiUsb : IDisposable
     Thread? _readThread;
     CancellationTokenSource? _cts;
 
-    // Display area: full physical screen dimensions (correct mapping)
-    // Freeze zones at edges are hardware FOV limits - handled by calibration extrapolation
-    const double MONITOR_W_MM = 597.9;
-    const double MONITOR_H_MM = 336.2;
+    // Display area: VISIBLE range only (not full screen!)
+    // At 60cm, tracker FOV covers ~203mm vertical (not 336mm full screen)
+    // Top 39.5% of 27" monitor is in blind zone (eye rotation >20°)
+    const double MONITOR_W_MM = 597.9;   // Full width visible
+    const double MONITOR_H_MM = 203.0;   // ONLY visible range (not full 336mm!)
     const double MONITOR_Y_BOTTOM_MM = 15.0;
     const double MONITOR_Z_MM = -10.0;
     const double MONITOR_X_SHIFT_MM = 0.0;
