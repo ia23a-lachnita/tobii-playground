@@ -12,6 +12,8 @@ public class CalibrationEngine
 {
     // 9-point calibration grid, spread out to cover tracker FOV
     // 12%-88% horizontal, 10%-90% vertical
+    // NOTE: Y coordinates are INVERTED (0=top, 1=bottom) to match screen rendering
+    // The calibration engine inverts Y when comparing with tracker data (Y=0 is bottom)
     public static readonly (double x, double y)[] GridTargets =
     [
         (0.12, 0.10), (0.50, 0.10), (0.88, 0.10),
@@ -218,7 +220,8 @@ public class CalibrationEngine
                 if (cleaned.Count >= 5)
                 {
                     var median = ComputeMedianPoint(cleaned);
-                    medians.Add((median.x, median.y, target.x, target.y));
+                    // Invert target Y: screen Y=0 is top, but tracker Y=0 is bottom
+                    medians.Add((median.x, median.y, target.x, 1.0 - target.y));
                     validPoints++;
                 }
             }

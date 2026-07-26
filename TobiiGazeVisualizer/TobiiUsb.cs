@@ -115,7 +115,7 @@ public class TobiiUsb : IDisposable
 
         // Session Open
         var setup = new WINUSB_SETUP_PACKET { RequestType = 0x41, Request = 0x41 };
-        WinUsb_ControlTransfer(_usbHandle, setup, null, 0, out _, IntPtr.Zero);
+        WinUsb_ControlTransfer(_usbHandle, setup, Array.Empty<byte>(), 0, out _, IntPtr.Zero);
 
         // HELLO
         SendRequest(0x3E8, new byte[] {
@@ -381,7 +381,7 @@ public class TobiiUsb : IDisposable
         if (_usbHandle != IntPtr.Zero && _usbHandle != new IntPtr(-1))
         {
             var setup = new WINUSB_SETUP_PACKET { RequestType = 0x41, Request = 0x42 };
-            WinUsb_ControlTransfer(_usbHandle, setup, null, 0, out _, IntPtr.Zero);
+            WinUsb_ControlTransfer(_usbHandle, setup, Array.Empty<byte>(), 0, out _, IntPtr.Zero);
             WinUsb_Free(_usbHandle);
         }
         if (_devHandle != IntPtr.Zero && _devHandle != new IntPtr(-1))

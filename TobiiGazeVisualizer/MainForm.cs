@@ -101,9 +101,9 @@ public class MainForm : Form
             _smoothX = sx;
             _smoothY = sy;
 
-            // Update trail
+            // Update trail - invert Y because tracker Y=0 is bottom, screen Y=0 is top
             float screenX = (float)(_smoothX * Width);
-            float screenY = (float)(_smoothY * Height);
+            float screenY = (float)((1 - _smoothY) * Height);
             _trail[_trailIdx] = new PointF(screenX, screenY);
             _trailIdx = (_trailIdx + 1) % _trail.Length;
         }
@@ -157,7 +157,7 @@ public class MainForm : Form
         }
 
         float cx = (float)(_smoothX * Width);
-        float cy = (float)(_smoothY * Height);
+        float cy = (float)((1 - _smoothY) * Height);  // Invert Y
 
         // Draw trail (fading)
         for (int i = 0; i < _trail.Length; i++)
