@@ -70,14 +70,10 @@ public class TobiiUsb : IDisposable
     Thread? _readThread;
     CancellationTokenSource? _cts;
 
-    // Display area = tracker's ACTUAL trackable FOV window at ~60cm, NOT full screen!
-    // Tracker sees ~40° cone: at 60cm that's ±218mm = 436mm wide, 436mm tall.
-    // Full screen (598x336mm) is WIDER than the FOV -> left/right/top edges physically untrackable.
-    // Mapping the trackable window to the full window makes every corner reachable
-    // (trade-off: compressed gaze mapping, cursor moves faster than eyes near edges).
-    // Sit ~1m away and full 598x336 would fit the FOV -> restore 1:1 mapping.
-    const double MONITOR_W_MM = 436.0;   // Trackable width at 60cm
-    const double MONITOR_H_MM = 180.0;   // Trackable height above Y_BOTTOM (slightly conservative)
+    // Display area: full physical screen dimensions
+    // We'll use diagnostics to find the actual visible range
+    const double MONITOR_W_MM = 597.9;
+    const double MONITOR_H_MM = 336.2;
     const double MONITOR_Y_BOTTOM_MM = 15.0;
     const double MONITOR_Z_MM = -10.0;
     const double MONITOR_X_SHIFT_MM = 0.0;

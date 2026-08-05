@@ -101,7 +101,7 @@ public class MainForm : Form
             _smoothX = sx;
             _smoothY = sy;
 
-            // Update trail - invert Y because tracker Y=0 is bottom, screen Y=0 is top
+            // Update trail
             float screenX = (float)(_smoothX * Width);
             float screenY = (float)(_smoothY * Height);
             _trail[_trailIdx] = new PointF(screenX, screenY);
