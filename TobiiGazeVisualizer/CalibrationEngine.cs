@@ -10,15 +10,13 @@ namespace TobiiGazeVisualizer;
 /// </summary>
 public class CalibrationEngine
 {
-    // 9-point calibration grid, spread out to cover tracker FOV
-    // 12%-88% horizontal, 10%-90% vertical
-    // NOTE: Y coordinates are INVERTED (0=top, 1=bottom) to match screen rendering
-    // The calibration engine inverts Y when comparing with tracker data (Y=0 is bottom)
+    // 9-point calibration grid, safely inside tracker FOV
+    // 15%-85% both axes: max dot angle ~14° horizontal, ~17° vertical (trackable at 60cm)
     public static readonly (double x, double y)[] GridTargets =
     [
-        (0.12, 0.10), (0.50, 0.10), (0.88, 0.10),
-        (0.12, 0.50), (0.50, 0.50), (0.88, 0.50),
-        (0.12, 0.90), (0.50, 0.90), (0.88, 0.90)
+        (0.15, 0.15), (0.50, 0.15), (0.85, 0.15),
+        (0.15, 0.50), (0.50, 0.50), (0.85, 0.50),
+        (0.15, 0.85), (0.50, 0.85), (0.85, 0.85)
     ];
 
     const double HARD_FAIL_MEAN_ERROR = 2.5;
@@ -183,8 +181,8 @@ public class CalibrationEngine
 
     static double AngularError(double rawX, double rawY, double targetX, double targetY)
     {
-        double dx = (rawX - targetX) * 597.9;  // Full width visible
-        double dy = (rawY - targetY) * 203.0;   // Visible range only (not full 336mm)
+        double dx = (rawX - targetX) * 436.0;  // Trackable width
+        double dy = (rawY - targetY) * 180.0;  // Trackable height
         double distMm = 600.0;
         double angleRad = Math.Atan2(Math.Sqrt(dx * dx + dy * dy), distMm);
         return angleRad * 180.0 / Math.PI;
@@ -220,8 +218,7 @@ public class CalibrationEngine
                 if (cleaned.Count >= 5)
                 {
                     var median = ComputeMedianPoint(cleaned);
-                    // Invert target Y: screen Y=0 is top, but tracker Y=0 is bottom
-                    medians.Add((median.x, median.y, target.x, 1.0 - target.y));
+                    medians.Add((median.x, median.y, target.x, target.y));
                     validPoints++;
                 }
             }
@@ -326,7 +323,7 @@ public class CalibrationEngine
             }
         }
         result.RmsNoiseDegrees = rmsCount > 0
-            ? Math.Sqrt(rmsSum / rmsCount) * Math.Sqrt(597.9 * 203.0) / 600.0 * (180.0 / Math.PI)
+            ? Math.Sqrt(rmsSum / rmsCount) * Math.Sqrt(436.0 * 180.0) / 600.0 * (180.0 / Math.PI)
             : 99;
 
         // Quality rating (relaxed thresholds)
