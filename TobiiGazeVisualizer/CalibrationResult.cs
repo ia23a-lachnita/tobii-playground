@@ -135,3 +135,19 @@ public enum CalibrationQuality
     Good,         // Acceptable quality
     Excellent     // High precision
 }
+
+/// <summary>
+/// Tobii-style validation report: fresh stimulus points never used in the fit,
+/// scored through the FINAL calibrated mapping. Accuracy = mean angular offset
+/// from target; precision = RMS scatter around the point centroid.
+/// </summary>
+public class ValidationReport
+{
+    public (double x, double y)[] Targets { get; set; } = [];
+    public double[] AccuracyDegrees { get; set; } = [];
+    public double[] PrecisionDegrees { get; set; } = [];
+    public int[] SampleCounts { get; set; } = [];
+    public double MeanAccuracyDegrees { get; set; }
+    public double MaxAccuracyDegrees { get; set; }
+    public double MeanPrecisionDegrees { get; set; }
+}

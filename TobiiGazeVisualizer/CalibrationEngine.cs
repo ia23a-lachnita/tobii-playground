@@ -41,7 +41,7 @@ public class CalibrationEngine
 
     // Eye-to-screen viewing distance in mm (measured: 55 cm). Only converts
     // normalized errors to angular degrees for reporting; never the mapping.
-    const double VIEWING_DIST_MM = 550.0;
+    public const double VIEWING_DIST_MM = 550.0;
 
     public class PointSamples
     {
@@ -216,7 +216,7 @@ public class CalibrationEngine
         return x;
     }
 
-    static double AngularError(double rawX, double rawY, double targetX, double targetY)
+    public static double AngularError(double rawX, double rawY, double targetX, double targetY)
     {
         double dx = (rawX - targetX) * 597.9;
         double dy = (rawY - targetY) * 336.2;

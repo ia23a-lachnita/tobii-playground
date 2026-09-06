@@ -70,6 +70,24 @@ public class CalibrationForm : Form
     bool _retrySingle;
     int _worstIdx = -1;
 
+    // Tobii-style validation: fresh points never used in the fit, scored
+    // through the final calibrated mapping. Edge midpoints + center catch
+    // exactly the "edges drift" complaint that fit residuals hide.
+    public static readonly (double x, double y)[] ValidationTargets =
+    [
+        (0.50, 0.06), (0.50, 0.94),
+        (0.06, 0.50), (0.94, 0.50),
+        (0.50, 0.50)
+    ];
+    const int VAL_QUOTA = 25;
+    const int VAL_MIN_MS = 500;
+    const int VAL_MAX_MS = 1500;
+
+    bool _validating;
+    int _valIdx;
+    List<(double cx, double cy)>[] _valSamples = [];
+    ValidationReport? _validation;
+
     // Blink tracking
     bool _lastValid;
     DateTime _lastBlinkEnd;
@@ -145,6 +163,34 @@ public class CalibrationForm : Form
         _targetSizeTarget = 12f;
     }
 
+    void StartValPoint(int index)
+    {
+        _valIdx = index;
+        _valSamples[index].Clear();
+        _validSampleCount = 0;
+
+        var target = ValidationTargets[index];
+        // Glide from wherever the dot currently is.
+        _dotFromX = _dotX; _dotFromY = _dotY;
+        _dotToX = target.x; _dotToY = target.y;
+
+        _phase = Phase.Transit;
+        _phaseStart = DateTime.UtcNow;
+        _targetSize = 40f;
+        _targetSizeTarget = 12f;
+    }
+
+    void StartValidation()
+    {
+        _validation = null;
+        _valSamples = new List<(double cx, double cy)>[ValidationTargets.Length];
+        for (int i = 0; i < ValidationTargets.Length; i++)
+            _valSamples[i] = new List<(double cx, double cy)>();
+        _validating = true;
+        _validSampleCount = 0;
+        StartValPoint(0);
+    }
+
     void AnimTick(object? sender, EventArgs e)
     {
         var now = DateTime.UtcNow;
@@ -180,10 +226,15 @@ public class CalibrationForm : Form
             }
             case Phase.Collect:
             {
+                // Validation runs shorter quotas on fresh points.
+                int quota = _validating ? VAL_QUOTA : SAMPLE_QUOTA;
+                int minMs = _validating ? VAL_MIN_MS : COLLECT_MIN_MS;
+                int maxMs = _validating ? VAL_MAX_MS : COLLECT_MAX_MS;
+
                 // End when: enough valid samples AND min time passed, OR max time reached
-                bool enoughSamples = _validSampleCount >= SAMPLE_QUOTA;
-                bool minTimePassed = elapsed >= COLLECT_MIN_MS;
-                bool maxTimeReached = elapsed >= COLLECT_MAX_MS;
+                bool enoughSamples = _validSampleCount >= quota;
+                bool minTimePassed = elapsed >= minMs;
+                bool maxTimeReached = elapsed >= maxMs;
 
                 if ((enoughSamples && minTimePassed) || maxTimeReached)
                 {
@@ -201,6 +252,13 @@ public class CalibrationForm : Form
                             {
                                 _retrySingle = false;
                                 ComputeAndShow();
+                            }
+                            else if (_validating)
+                            {
+                                if (_valIdx < ValidationTargets.Length - 1)
+                                    StartValPoint(_valIdx + 1);
+                                else
+                                    FinishValidation();
                             }
                             else if (_currentPoint < CalibrationEngine.GridTargets.Length - 1)
                                 StartPoint(_currentPoint + 1);
@@ -286,6 +344,19 @@ public class CalibrationForm : Form
         // Fixation-only data: drop saccades, glissades, post-saccadic wobble.
         if (speed > VELOCITY_GATE) return;
 
+        if (_validating)
+        {
+            // Score through the FINAL mapping: this is the point — fresh data,
+            // calibrated output, honest edge accuracy.
+            if (_result != null)
+            {
+                var (cx, cy) = _result.TransformFused(lx, ly, rx, ry, lok, rok);
+                _valSamples[_valIdx].Add((cx, cy));
+                _validSampleCount++;
+            }
+            return;
+        }
+
         if (lok)
         {
             _allSamples[_currentPoint].Add((Math.Clamp(lx, 0, 1), Math.Clamp(ly, 0, 1), tsMs, true));
@@ -329,6 +400,50 @@ public class CalibrationForm : Form
         Invalidate();
     }
 
+    void FinishValidation()
+    {
+        _validating = false;
+        var report = new ValidationReport
+        {
+            Targets = ValidationTargets,
+            AccuracyDegrees = new double[ValidationTargets.Length],
+            PrecisionDegrees = new double[ValidationTargets.Length],
+            SampleCounts = new int[ValidationTargets.Length],
+        };
+        double accSum = 0, precSum = 0;
+        int n = 0;
+        for (int i = 0; i < ValidationTargets.Length; i++)
+        {
+            var samples = _valSamples[i];
+            report.SampleCounts[i] = samples.Count;
+            if (samples.Count < 5)
+            {
+                report.AccuracyDegrees[i] = double.NaN;
+                report.PrecisionDegrees[i] = double.NaN;
+                continue;
+            }
+            var (tx, ty) = ValidationTargets[i];
+            double acc = samples.Average(s =>
+                CalibrationEngine.AngularError(s.cx, s.cy, tx, ty));
+            double mx = samples.Average(s => s.cx);
+            double my = samples.Average(s => s.cy);
+            // Precision in degrees: RMS scatter around the centroid, scaled by
+            // local screen geometry like the calibration RMS metric.
+            double prec = Math.Sqrt(samples.Average(s =>
+                (s.cx - mx) * (s.cx - mx) + (s.cy - my) * (s.cy - my)))
+                * 597.9 / CalibrationEngine.VIEWING_DIST_MM * (180.0 / Math.PI);
+            report.AccuracyDegrees[i] = acc;
+            report.PrecisionDegrees[i] = prec;
+            accSum += acc; precSum += prec; n++;
+        }
+        report.MeanAccuracyDegrees = n > 0 ? accSum / n : double.NaN;
+        report.MaxAccuracyDegrees = report.AccuracyDegrees.Where(a => !double.IsNaN(a)).DefaultIfEmpty(double.NaN).Max();
+        report.MeanPrecisionDegrees = n > 0 ? precSum / n : double.NaN;
+        _validation = report;
+        _phase = Phase.Results;
+        Invalidate();
+    }
+
     protected override void OnPaint(PaintEventArgs e)
     {
         base.OnPaint(e);
@@ -336,13 +451,20 @@ public class CalibrationForm : Form
         g.SmoothingMode = SmoothingMode.AntiAlias;
 
         // Progress dots at top
-        int pointCount = CalibrationEngine.GridTargets.Length;
+        int pointCount = _validating ? ValidationTargets.Length : CalibrationEngine.GridTargets.Length;
+        int curPoint = _validating ? _valIdx : _currentPoint;
         for (int i = 0; i < pointCount; i++)
         {
             float px = Width / 2f + (i - (pointCount - 1) / 2f) * 30;
-            using var dotBrush = new SolidBrush(i < _currentPoint ? Color.LimeGreen :
-                i == _currentPoint ? Color.White : Color.Gray);
+            using var dotBrush = new SolidBrush(i < curPoint ? Color.LimeGreen :
+                i == curPoint ? Color.White : Color.Gray);
             g.FillEllipse(dotBrush, px - 6, 30, 12, 12);
+        }
+
+        if (_validation != null)
+        {
+            DrawValidation(g);
+            return;
         }
 
         if (_result != null)
@@ -385,13 +507,15 @@ public class CalibrationForm : Form
         // Instructions
         using var font = new Font("Segoe UI", 16);
         using var brush = new SolidBrush(Color.FromArgb(200, 220, 220, 220));
-        string msg = _phase switch
-        {
-            Phase.Transit => $"Moving to dot {_currentPoint + 1}/{CalibrationEngine.GridTargets.Length}...",
-            Phase.Settle => $"Hold steady on dot {_currentPoint + 1}/{CalibrationEngine.GridTargets.Length}...",
-            Phase.Collect => $"Look at the dot ({_validSampleCount}/{SAMPLE_QUOTA} samples)",
-            _ => "Processing..."
-        };
+        string msg = _validating
+            ? $"Validating edge point {_valIdx + 1}/{ValidationTargets.Length} ({_validSampleCount}/{VAL_QUOTA} samples)..."
+            : _phase switch
+            {
+                Phase.Transit => $"Moving to dot {_currentPoint + 1}/{CalibrationEngine.GridTargets.Length}...",
+                Phase.Settle => $"Hold steady on dot {_currentPoint + 1}/{CalibrationEngine.GridTargets.Length}...",
+                Phase.Collect => $"Look at the dot ({_validSampleCount}/{SAMPLE_QUOTA} samples)",
+                _ => "Processing..."
+            };
         var size = g.MeasureString(msg, font);
         g.DrawString(msg, font, brush, (Width - size.Width) / 2, Height - 80);
 
@@ -457,14 +581,49 @@ public class CalibrationForm : Form
             g.DrawString(worst, smallFont, Brushes.Gold, cx - 250, cy + 92);
         }
 
-        g.DrawString("ENTER = accept   |   R = retry worst point   |   ESC = cancel",
-            smallFont, Brushes.White, cx - 250, cy + 122);
+        g.DrawString("ENTER = accept   |   R = retry worst point   |   V = validate   |   ESC = cancel",
+            smallFont, Brushes.White, cx - 280, cy + 122);
 
         if (r.Quality == CalibrationQuality.Failed)
         {
             g.DrawString("Position yourself 60-70cm from the tracker and try again.",
                 smallFont, Brushes.OrangeRed, cx - 220, cy + 152);
         }
+    }
+
+    void DrawValidation(Graphics g)
+    {
+        var v = _validation!;
+        string[] names = ["Top edge", "Bottom edge", "Left edge", "Right edge", "Center"];
+
+        using var titleFont = new Font("Segoe UI", 28, FontStyle.Bold);
+        using var font = new Font("Segoe UI", 16);
+        using var smallFont = new Font("Segoe UI", 13);
+
+        float cx = Width / 2f;
+        float cy = Height / 2f - 60;
+
+        g.DrawString("Validation (fresh points)", titleFont, Brushes.White, cx - 250, cy - 120);
+
+        string overall = double.IsNaN(v.MeanAccuracyDegrees)
+            ? "No usable validation samples"
+            : $"Mean accuracy: {v.MeanAccuracyDegrees:F2}°  |  Worst: {v.MaxAccuracyDegrees:F2}°  |  Mean precision: {v.MeanPrecisionDegrees:F2}°";
+        g.DrawString(overall, font, Brushes.LightGray, cx - 250, cy - 60);
+
+        for (int i = 0; i < ValidationTargets.Length; i++)
+        {
+            double acc = v.AccuracyDegrees[i];
+            string line = double.IsNaN(acc)
+                ? $"{names[i]}: no data ({v.SampleCounts[i]} samples)"
+                : $"{names[i]}: {acc:F2}° acc, {v.PrecisionDegrees[i]:F2}° prec ({v.SampleCounts[i]} samples)";
+            Color c = double.IsNaN(acc) ? Color.Gray
+                : acc > 1.5 ? Color.OrangeRed : acc > 0.8 ? Color.Gold : Color.LimeGreen;
+            using var b = new SolidBrush(c);
+            g.DrawString(line, font, b, cx - 250, cy - 20 + i * 30);
+        }
+
+        g.DrawString("ENTER = accept calibration   |   V = re-run validation   |   ESC = cancel",
+            smallFont, Brushes.White, cx - 280, cy + 150);
     }
 
     protected override void OnKeyDown(KeyEventArgs e)
@@ -475,18 +634,23 @@ public class CalibrationForm : Form
             _tracker.OnGazeStereo -= OnGazeStereo;
             Close();
         }
-        else if (e.KeyCode == Keys.Enter && _result != null)
+        else if (e.KeyCode == Keys.Enter && (_result != null || _validation != null))
         {
             WasCancelled = false;
             _tracker.OnGazeStereo -= OnGazeStereo;
             Close();
         }
-        else if (e.KeyCode == Keys.R && _result != null && _worstIdx >= 0)
+        else if (e.KeyCode == Keys.R && _result != null && _validation == null && _worstIdx >= 0)
         {
             // Re-collect only the worst point, then recompute everything.
             _result = null;
             _retrySingle = true;
             StartPoint(_worstIdx);
+        }
+        else if (e.KeyCode == Keys.V && _result != null && !_validating &&
+                 _result.Quality != CalibrationQuality.Failed)
+        {
+            StartValidation();
         }
     }
 
