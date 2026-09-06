@@ -39,6 +39,10 @@ public class CalibrationEngine
 
     const double Q42_SCALE = 4398046511104.0;
 
+    // Eye-to-screen viewing distance in mm (measured: 55 cm). Only converts
+    // normalized errors to angular degrees for reporting; never the mapping.
+    const double VIEWING_DIST_MM = 550.0;
+
     public class PointSamples
     {
         public List<(double x, double y)> LeftSamples { get; } = [];
@@ -216,8 +220,7 @@ public class CalibrationEngine
     {
         double dx = (rawX - targetX) * 597.9;
         double dy = (rawY - targetY) * 336.2;
-        double distMm = 600.0;
-        double angleRad = Math.Atan2(Math.Sqrt(dx * dx + dy * dy), distMm);
+        double angleRad = Math.Atan2(Math.Sqrt(dx * dx + dy * dy), VIEWING_DIST_MM);
         return angleRad * 180.0 / Math.PI;
     }
 
@@ -416,7 +419,7 @@ public class CalibrationEngine
             }
         }
         result.RmsNoiseDegrees = rmsCount > 0
-            ? Math.Sqrt(rmsSum / rmsCount) * 597.9 / 600.0 * (180.0 / Math.PI)
+            ? Math.Sqrt(rmsSum / rmsCount) * 597.9 / VIEWING_DIST_MM * (180.0 / Math.PI)
             : 99;
 
         // Quality rating (LOOCV shown but not rated: held-out corners inflate it)

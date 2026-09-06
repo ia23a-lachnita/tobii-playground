@@ -73,14 +73,23 @@ public class TobiiUsb : IDisposable
     Thread? _readThread;
     CancellationTokenSource? _cts;
 
-    // Display area: full physical screen dimensions
-    // Tracker is tilted upward ~20° when mounted on bottom bezel
+    // Display area: measured physical geometry (tape + phone inclinometer,
+    // 2026-09-07) for Acer Nitro 27" 165Hz (VG271-class: 597.6 x 336.2 mm
+    // viewable per displaydb spec — matches the 23.5" tape width exactly).
+    //  - image bottom edge 14 mm above bar middle (tape: 1.4 cm)
+    //  - screen surface 15 mm behind bar front (tape: 1.5 cm depth)
+    //  - bar centered under screen within ~2 mm (tape both sides)
+    //  - tilt: bar face 7.7 deg vs table, screen 2.8 deg vs table ->
+    //    effective screen-in-tracker-frame tilt ~= 5 deg (was: 20 deg guess).
+    //    The 20-deg guess put the plane top ~90 mm too far toward the user,
+    //    a systematic top bias the calibration could only bend around
+    //    (top-center point stuck at ~1.7 deg across retries).
     const double MONITOR_W_MM = 597.9;
     const double MONITOR_H_MM = 336.2;
-    const double MONITOR_Y_BOTTOM_MM = 15.0;
-    const double MONITOR_Z_BOTTOM_MM = -10.0;
+    const double MONITOR_Y_BOTTOM_MM = 14.0;
+    const double MONITOR_Z_BOTTOM_MM = -15.0;
     const double MONITOR_X_SHIFT_MM = 0.0;
-    const double TRACKER_TILT_DEG = 20.0;
+    const double TRACKER_TILT_DEG = 5.0;
 
     public bool Connect()
     {
