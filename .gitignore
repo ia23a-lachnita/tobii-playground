@@ -10,3 +10,4 @@ obj/
 *.snupkg
 .vs/
 *.bin
+__pycache__/
