@@ -17,6 +17,7 @@ public class MainForm : Form
     double _smoothX, _smoothY;
     bool _isValid;
     bool _leftDetected, _rightDetected;
+    DateTime _lastGazeEvent = DateTime.UtcNow;
     readonly PointF[] _trail = new PointF[150];
     int _trailIdx;
 
@@ -78,6 +79,7 @@ public class MainForm : Form
         _leftDetected = leftOk;
         _rightDetected = rightOk;
         _isValid = leftOk || rightOk;
+        _lastGazeEvent = DateTime.UtcNow;
 
         if (_isValid)
         {
@@ -130,13 +132,21 @@ public class MainForm : Form
         var g = e.Graphics;
         g.SmoothingMode = SmoothingMode.AntiAlias;
 
-        if (!_isValid)
+        // Staleness guard: OnGazeReceived only fires on live packets, so a dead
+        // read thread used to leave a frozen bubble on screen with stale numbers.
+        // No packet for >500 ms at ~90 Hz means the stream stalled — say so.
+        bool stale = (DateTime.UtcNow - _lastGazeEvent).TotalMilliseconds > 500;
+        bool live = _isValid && !stale;
+
+        if (!live)
         {
             using var font = new Font("Segoe UI", 18);
             using var brush = new SolidBrush(Color.FromArgb(120, 255, 255, 255));
-            string msg = _leftDetected || _rightDetected
-                ? "Tracking..."
-                : "Look at the tracker (40-80cm away)";
+            string msg = stale
+                ? "Signal lost — no gaze data (tracker idle or disconnected)"
+                : _leftDetected || _rightDetected
+                    ? "Tracking..."
+                    : "Look at the tracker (40-80cm away)";
             var size = g.MeasureString(msg, font);
             g.DrawString(msg, font, brush, (Width - size.Width) / 2, (Height - size.Height) / 2);
 

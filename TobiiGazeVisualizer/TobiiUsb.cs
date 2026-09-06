@@ -171,15 +171,40 @@ public class TobiiUsb : IDisposable
     {
         var ct = (CancellationToken)tokenObj!;
         byte[] buf = new byte[16384];
+        int consecErrors = 0;
 
         while (!ct.IsCancellationRequested)
         {
             if (!WinUsb_ReadPipe(_usbHandle, _inEp, buf, (uint)buf.Length, out uint xferBytes, IntPtr.Zero))
             {
                 int err = Marshal.GetLastWin32Error();
-                if (err == 997) continue; // ERROR_IO_PENDING
-                break;
+                // 997 = ERROR_IO_PENDING, 121 = ERROR_SEM_TIMEOUT (no data within
+                // the 100 ms pipe timeout — happens whenever the user is out of
+                // range, blinks long, or looks away). Both are TRANSIENT.
+                // The old code did `break` on anything but 997, so the first
+                // idle moment killed the thread permanently: all numbers froze
+                // at their last values and calibration collected zero samples.
+                if (err == 997 || err == 121)
+                {
+                    consecErrors = 0;
+                    IsTracking = false;
+                    continue;
+                }
+                if (++consecErrors < 200)
+                {
+                    Thread.Sleep(25);
+                    continue;
+                }
+                // Sustained failure (e.g. device unplugged): idle-poll slowly
+                // until cancelled. Never `break` — StartTracking refuses to
+                // start a second thread while _readThread != null, so exiting
+                // here would brick the stream until app restart.
+                IsTracking = false;
+                consecErrors = 0;
+                Thread.Sleep(500);
+                continue;
             }
+            consecErrors = 0;
             if (xferBytes < 32) continue;
 
             uint magic = ReadU32BE(buf, 8);

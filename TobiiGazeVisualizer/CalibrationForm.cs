@@ -50,6 +50,7 @@ public class CalibrationForm : Form
     double _gazeX, _gazeY;
     bool _gazeValid;
     int _validSampleCount;
+    DateTime _lastGazeEvent = DateTime.UtcNow;
 
     // Blink tracking
     bool _lastValid;
@@ -194,6 +195,7 @@ public class CalibrationForm : Form
 
     void OnGaze(double rawX, double rawY, bool leftOk, bool rightOk)
     {
+        _lastGazeEvent = DateTime.UtcNow;
         rawX = Math.Clamp(rawX, 0, 1);
         rawY = Math.Clamp(rawY, 0, 1);
 
@@ -340,6 +342,16 @@ public class CalibrationForm : Form
 
         using var smallFont = new Font("Segoe UI", 11);
         g.DrawString("Press ESC to cancel", smallFont, Brushes.Gray, 10, 10);
+
+        // Stream watchdog: the progress ring fills from live gaze samples, so a
+        // stalled stream looks like "dots never complete". Say so explicitly.
+        if ((DateTime.UtcNow - _lastGazeEvent).TotalMilliseconds > 1500 && _result == null)
+        {
+            using var warnFont = new Font("Segoe UI", 14, FontStyle.Bold);
+            string warn = "NO GAZE DATA — stream stalled, check tracker connection";
+            var wsize = g.MeasureString(warn, warnFont);
+            g.DrawString(warn, warnFont, Brushes.Red, (Width - wsize.Width) / 2, 60);
+        }
     }
 
     void DrawResults(Graphics g)
