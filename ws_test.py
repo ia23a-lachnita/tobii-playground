@@ -1,4 +1,12 @@
-"""Test WebSocket connection to TobiiGhost"""
+"""Test WebSocket connection to TobiiGhost.
+
+NOTE (audit 2026-09-06): Tobii Ghost exposes NO documented local WebSocket API
+— its overlay is SSOverlay.exe captured via game-capture (OBS) or the Twitch
+extension. The ghost.exe/game_hub.exe files in this repo are actually saved
+Tobii download web pages (identical SHA-256), not executables, so there is no
+local Ghost binary to probe here. These probes are kept as experiments; expect
+connection-refused / 501s until a real Ghost install is running.
+"""
 import websocket
 import json
 import time

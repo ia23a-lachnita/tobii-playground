@@ -71,12 +71,13 @@ public class TobiiUsb : IDisposable
     CancellationTokenSource? _cts;
 
     // Display area: full physical screen dimensions
-    // We'll use diagnostics to find the actual visible range
+    // Tracker is tilted upward ~20° when mounted on bottom bezel
     const double MONITOR_W_MM = 597.9;
     const double MONITOR_H_MM = 336.2;
     const double MONITOR_Y_BOTTOM_MM = 15.0;
-    const double MONITOR_Z_MM = -10.0;
+    const double MONITOR_Z_BOTTOM_MM = -10.0;
     const double MONITOR_X_SHIFT_MM = 0.0;
+    const double TRACKER_TILT_DEG = 20.0;
 
     public bool Connect()
     {
@@ -94,8 +95,13 @@ public class TobiiUsb : IDisposable
             IntPtr detailBuf = Marshal.AllocHGlobal(required);
             Marshal.WriteInt32(detailBuf, 8);
             if (SetupDiGetDeviceInterfaceDetail(devInfo, ref ifData, detailBuf, required, ref required, IntPtr.Zero))
-                devicePath = Marshal.PtrToStringAuto(detailBuf + 4);
+            {
+                // Take the first enumerated WinUSB device; previously the loop
+                // kept overwriting devicePath and connected to the LAST match.
+                devicePath ??= Marshal.PtrToStringAuto(detailBuf + 4);
+            }
             Marshal.FreeHGlobal(detailBuf);
+            if (devicePath != null) break;
         }
         SetupDiDestroyDeviceInfoList(devInfo);
         if (devicePath == null) return false;
@@ -129,14 +135,14 @@ public class TobiiUsb : IDisposable
         SendRequest(0x640, new byte[] { 0x00, 0x00 });
         ReadResponse();
 
-        // SET display area - correct geometry for bottom-center mount
+        // SET display area - account for tracker tilt angle
         double leftEdge = -MONITOR_W_MM / 2 + MONITOR_X_SHIFT_MM;
-        SetDisplayArea(MONITOR_W_MM, MONITOR_H_MM, leftEdge, MONITOR_Y_BOTTOM_MM, MONITOR_Z_MM);
+        SetDisplayArea(MONITOR_W_MM, MONITOR_H_MM, leftEdge, MONITOR_Y_BOTTOM_MM, MONITOR_Z_BOTTOM_MM, TRACKER_TILT_DEG);
 
         // GET display area (confirm)
         SendRequest(0x596, Array.Empty<byte>());
         var getResponse = ReadResponse();
-        System.IO.File.WriteAllBytes("C:\\Users\\xursc\\projects\\tobii_playground\\get_display_area_response.bin", getResponse);
+        System.IO.File.WriteAllBytes(System.IO.Path.Combine(AppContext.BaseDirectory, "get_display_area_response.bin"), getResponse);
 
         // SUBSCRIBE gaze_point (0x0500)
         SendSubscribe(0x0500);
@@ -235,9 +241,9 @@ public class TobiiUsb : IDisposable
                     {
                         if (pos + 26 > end) goto done;
                         pos += 5;
-                        double px = ((long)ReadU32BE(buf, pos) << 32 | ReadU32BE(buf, pos + 4)) / Q42_SCALE; pos += 8;
+                        double px = ReadQ42Signed(buf, pos); pos += 8;
                         pos += 5;
-                        double py = ((long)ReadU32BE(buf, pos) << 32 | ReadU32BE(buf, pos + 4)) / Q42_SCALE; pos += 8;
+                        double py = ReadQ42Signed(buf, pos); pos += 8;
                         if (colId == 0x1c) { gazeX = px; gazeY = py; } // combined binocular 2D
                     }
                     else if (structTag == 0x031F41) // point3d
@@ -264,25 +270,41 @@ public class TobiiUsb : IDisposable
         }
     }
 
-    void SetDisplayArea(double w, double h, double ox, double oy, double z)
+    void SetDisplayArea(double w, double h, double ox, double oy, double z, double tiltDeg = 0)
     {
-        byte[] payload = new byte[180];
+        byte[] payload = new byte[220]; // extra space for transformed points
         int n = 0;
         payload[n++] = 0x00; payload[n++] = 0x00;
 
-        // Reference test case from Tobii_Linux (600x335mm screen, 15° tilt)
-        // TL: (-300, 333.585, 86.704)
-        // TR: (300, 333.585, 86.704)
-        // BL: (-300, 10, 0)
-        // Using simplified flat screen for now
-        double x0 = ox;          // left
-        double x1 = ox + w;      // right
-        double y0 = oy;          // bottom
-        double y1 = oy + h;      // top
+        // Rect+tilt -> corners, pivoting about the bottom-left corner.
+        // tl = bl + h*(cos tilt, sin tilt); tr = tl + (w, 0, 0).
+        // Positive tilt = screen top leaning away from the tracker, matching
+        // tobiifree driver/src/tracker.zig setDisplayArea and the Tobii_Linux
+        // reference case (600x335mm screen, 15 deg tilt:
+        // BL=(-300,10,0) -> TL=(-300,333.585,86.704), i.e. top Z POSITIVE).
+        // The previous revision rotated about the tracker origin with a
+        // flipped Z sign (TL z=-129.5 instead of ~+105 for this monitor),
+        // defining a wrong plane that the software calibration then had to
+        // absorb. The device echoes whatever plane it is given (verified via
+        // get_display_area_response.bin), so a correct plane matters for
+        // linearity at the screen edges.
+        double rad = tiltDeg * Math.PI / 180.0;
+        double cosT = Math.Cos(rad);
+        double sinT = Math.Sin(rad);
 
-        n += WritePoint3D(payload, n, x0, y1, z);  // TL
-        n += WritePoint3D(payload, n, x1, y1, z);  // TR
-        n += WritePoint3D(payload, n, x0, y0, z);  // BL
+        double blX = ox;
+        double blY = oy;
+        double blZ = z;
+        double tlX = blX;
+        double tlY = blY + h * cosT;
+        double tlZ = blZ + h * sinT;
+        double trX = blX + w;
+        double trY = tlY;
+        double trZ = tlZ;
+
+        n += WritePoint3D(payload, n, tlX, tlY, tlZ);   // TL
+        n += WritePoint3D(payload, n, trX, trY, trZ);   // TR
+        n += WritePoint3D(payload, n, blX, blY, blZ);   // BL
 
         // End marker tag
         payload[n++] = 0x05;
@@ -294,15 +316,15 @@ public class TobiiUsb : IDisposable
 
         byte[] trimmed = new byte[n];
         Array.Copy(payload, trimmed, n);
-        
-        // Debug: write payload to file
-        System.IO.File.WriteAllBytes("C:\\Users\\xursc\\projects\\tobii_playground\\display_area_payload.bin", trimmed);
-        
+
+        // Debug: write payload next to the binaries (gitignored *.bin)
+        System.IO.File.WriteAllBytes(System.IO.Path.Combine(AppContext.BaseDirectory, "display_area_payload.bin"), trimmed);
+
         SendRequest(0x5A0, trimmed);
         var response = ReadResponse();
-        
-        // Debug: write response to file
-        System.IO.File.WriteAllBytes("C:\\Users\\xursc\\projects\\tobii_playground\\display_area_response.bin", response);
+
+        // Debug: write response next to the binaries (gitignored *.bin)
+        System.IO.File.WriteAllBytes(System.IO.Path.Combine(AppContext.BaseDirectory, "display_area_response.bin"), response);
     }
 
     int WritePoint3D(byte[] buf, int offset, double x, double y, double z)
@@ -369,6 +391,19 @@ public class TobiiUsb : IDisposable
     }
 
     static uint ReadU32BE(byte[] d, int o) => o + 4 <= d.Length ? (uint)(d[o] << 24 | d[o + 1] << 16 | d[o + 2] << 8 | d[o + 3]) : 0;
+
+    // Signed Q42 (TLV type 4): 8-byte big-endian SIGNED int / 2^42.
+    // The old code zero-extended the high word ((long)uint << 32), which
+    // decodes any negative value (e.g. left display corners, x < 0) as a huge
+    // positive number. Gaze column 0x1c is always in [0,1] so it happened to
+    // work, but the helper is required for display-area readback and any
+    // future column. Reference: tobiifree driver/src/tlv.zig readFixed22x42.
+    static double ReadQ42Signed(byte[] d, int o)
+    {
+        if (o + 8 > d.Length) return 0;
+        long v = ((long)(int)ReadU32BE(d, o) << 32) | ReadU32BE(d, o + 4);
+        return v / Q42_SCALE;
+    }
     static void WriteU32BE(byte[] d, int o, uint v) { d[o] = (byte)(v >> 24); d[o + 1] = (byte)(v >> 16); d[o + 2] = (byte)(v >> 8); d[o + 3] = (byte)v; }
     static void WriteU32LE(byte[] d, int o, uint v) { d[o] = (byte)v; d[o + 1] = (byte)(v >> 8); d[o + 2] = (byte)(v >> 16); d[o + 3] = (byte)(v >> 24); }
 

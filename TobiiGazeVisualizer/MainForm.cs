@@ -41,7 +41,7 @@ public class MainForm : Form
         var screen = Screen.PrimaryScreen?.Bounds ?? new Rectangle(0, 0, 1920, 1080);
         Bounds = screen;
 
-        _smoother = new GazeSmoother(minCutoff: 1.0, beta: 0.5);
+        _smoother = new GazeSmoother(); // defaults: minCutoff 0.1 Hz, beta 10, saccade snap
         _tracker = new TobiiUsb();
         _calibration = CalibrationResult.LoadDefault();
 

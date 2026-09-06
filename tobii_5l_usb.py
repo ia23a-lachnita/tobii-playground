@@ -1,10 +1,16 @@
-"""Tobii Eye Tracker 5L - Direct USB communication via WinUSB
+"""Tobii Eye Tracker 5L - Direct USB communication via WinUSB.
 
-This script communicates directly with the Tobii Eye Tracker 5L's EyeChip
-interface using the WinUSB driver (which is already installed).
-
-Based on the reverse-engineered protocol from the tobii_ffg project:
-https://github.com/simonvc/tobii_ffg/blob/main/PROTOCOL.md
+NOTE (audit 2026-09-06): this script is SUPERSEDED by the C# implementation in
+TobiiGazeVisualizer/TobiiUsb.cs, which is tested and streams gaze. This file is
+kept for reference only and has known issues — do not treat it as working:
+  * find_tobii_5l() carries a hardcoded device path with one unit's serial
+    (IS510-100211405834); only the SetupDi enumeration path is generic.
+  * OVERLAPPED is hand-rolled and hEvent is never created, so the
+    WaitForSingleObject/GetOverlappedResult path waits on a garbage handle.
+  * GAZE_*_OFFSET magic numbers are unverified for the 5L (copied from
+    tobii_ffg notes for a different unit) and the streaming loop checks both
+    a TTP parse AND a raw-offset parse, double-printing samples.
+Use TobiiGazeDemo/Program.cs for direct-USB experiments instead.
 """
 
 import ctypes

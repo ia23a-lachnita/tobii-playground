@@ -242,8 +242,9 @@ class TobiiGazeDirect
     {
         if (o + 13 > d.Length) return 0;
         if (d[o] != 0x04) return 0;
-        long v = ((long)d[o + 5] << 56) | ((long)d[o + 6] << 48) | ((long)d[o + 7] << 40) | ((long)d[o + 8] << 32)
-               | ((long)d[o + 9] << 24) | ((long)d[o + 10] << 16) | ((long)d[o + 11] << 8) | d[o + 12];
+        // Signed 64-bit: sign-extend the high word, otherwise negative display
+        // corners (e.g. TL_x = -265.5) decode as huge positives.
+        long v = ((long)(int)ReadU32BE(d, o + 5) << 32) | ReadU32BE(d, o + 9);
         return v / Q42_SCALE;
     }
 
@@ -364,10 +365,10 @@ class TobiiGazeDirect
                     pos += 5;
                     cols[colId] = (double)((int)ReadU32BE(buf, pos)) / 65536.0; pos += 4;
                     break;
-                case 4: // Q42
+                case 4: // Q42 (signed — eye/gaze vectors can be negative)
                     if (pos + 13 > end) goto done;
                     pos += 5;
-                    long qv = ((long)ReadU32BE(buf, pos) << 32) | ReadU32BE(buf, pos + 4); pos += 8;
+                    long qv = ((long)(int)ReadU32BE(buf, pos) << 32) | ReadU32BE(buf, pos + 4); pos += 8;
                     cols[colId] = qv / Q42_SCALE;
                     break;
                 case 5: // prolog (struct)
@@ -377,16 +378,16 @@ class TobiiGazeDirect
                     if (structTag == 0x021F40) // point2d
                     {
                         if (pos + 26 > end) goto done;
-                        pos += 5; double px = ((long)ReadU32BE(buf, pos) << 32 | ReadU32BE(buf, pos + 4)) / Q42_SCALE; pos += 8;
-                        pos += 5; double py = ((long)ReadU32BE(buf, pos) << 32 | ReadU32BE(buf, pos + 4)) / Q42_SCALE; pos += 8;
+                        pos += 5; double px = ((long)(int)ReadU32BE(buf, pos) << 32 | ReadU32BE(buf, pos + 4)) / Q42_SCALE; pos += 8;
+                        pos += 5; double py = ((long)(int)ReadU32BE(buf, pos) << 32 | ReadU32BE(buf, pos + 4)) / Q42_SCALE; pos += 8;
                         cols[colId] = new double[] { px, py };
                     }
                     else if (structTag == 0x031F41) // point3d
                     {
                         if (pos + 39 > end) goto done;
-                        pos += 5; double p3x = ((long)ReadU32BE(buf, pos) << 32 | ReadU32BE(buf, pos + 4)) / Q42_SCALE; pos += 8;
-                        pos += 5; double p3y = ((long)ReadU32BE(buf, pos) << 32 | ReadU32BE(buf, pos + 4)) / Q42_SCALE; pos += 8;
-                        pos += 5; double p3z = ((long)ReadU32BE(buf, pos) << 32 | ReadU32BE(buf, pos + 4)) / Q42_SCALE; pos += 8;
+                        pos += 5; double p3x = ((long)(int)ReadU32BE(buf, pos) << 32 | ReadU32BE(buf, pos + 4)) / Q42_SCALE; pos += 8;
+                        pos += 5; double p3y = ((long)(int)ReadU32BE(buf, pos) << 32 | ReadU32BE(buf, pos + 4)) / Q42_SCALE; pos += 8;
+                        pos += 5; double p3z = ((long)(int)ReadU32BE(buf, pos) << 32 | ReadU32BE(buf, pos + 4)) / Q42_SCALE; pos += 8;
                         cols[colId] = new double[] { p3x, p3y, p3z };
                     }
                     else goto done;

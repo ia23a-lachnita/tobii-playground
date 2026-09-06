@@ -12,8 +12,7 @@ public class CalibrationEngine
 {
     // 9-point calibration grid, spread out to cover tracker FOV
     // 12%-88% horizontal, 10%-90% vertical
-    // NOTE: Y coordinates are INVERTED (0=top, 1=bottom) to match screen rendering
-    // The calibration engine inverts Y when comparing with tracker data (Y=0 is bottom)
+    // Both tracker (ADCS) and screen use Y=0 at top — coordinates match directly
     public static readonly (double x, double y)[] GridTargets =
     [
         (0.12, 0.10), (0.50, 0.10), (0.88, 0.10),
@@ -25,6 +24,16 @@ public class CalibrationEngine
     const double WARN_SINGLE_POINT = 3.0;
     const double HARD_FAIL_RMS = 0.5;
     const int MIN_POINTS_REQUIRED = 6;
+
+    // Minimum valid points before the 2nd-order polynomial stage is enabled.
+    // A 6-coefficient fit on 6-7 points has ~0 degrees of freedom and exactly
+    // interpolates sensor noise (Runge-type edge blowup); with < 8 points the
+    // affine-only model generalises better.
+    const int MIN_POINTS_POLY = 8;
+
+    // L2 (ridge) penalty added to the polynomial normal-equation diagonal.
+    // Keeps the x^2/xy/y^2 terms small unless the data really needs them.
+    const double RIDGE_LAMBDA = 1e-3;
 
     const double Q42_SCALE = 4398046511104.0;
 
@@ -105,7 +114,9 @@ public class CalibrationEngine
     static double[] FitPolynomial(List<(double rawX, double rawY)> rawPoints, List<double> targetValues)
     {
         int n = rawPoints.Count;
-        if (n < 6) return [0, 1, 0, 0, 0, 0];
+        // Underdetermined: return a ZERO residual correction (not identity —
+        // identity here would add the raw coordinate a second time).
+        if (n < 6) return [0, 0, 0, 0, 0, 0];
 
         double[,] A = new double[n, 6];
         for (int i = 0; i < n; i++)
@@ -129,12 +140,19 @@ public class CalibrationEngine
                 for (int k = 0; k < n; k++) sum += A[k, i] * A[k, j];
                 ATA[i, j] = sum;
             }
+            // Ridge: penalise large coefficients, stabilises near-singular fits
+            ATA[i, i] += RIDGE_LAMBDA;
             double bsum = 0;
             for (int k = 0; k < n; k++) bsum += A[k, i] * targetValues[k];
             ATb[i] = bsum;
         }
 
-        return SolveLinearSystem(ATA, ATb);
+        var coeff = SolveLinearSystem(ATA, ATb);
+        // Solver guard: a singular system yields NaN/Inf — fall back to no
+        // correction rather than poisoning the calibration.
+        if (coeff.Any(double.IsNaN) || coeff.Any(double.IsInfinity))
+            return [0, 0, 0, 0, 0, 0];
+        return coeff;
     }
 
     static double[] SolveLinearSystem(double[,] M, double[] b)
@@ -220,8 +238,8 @@ public class CalibrationEngine
                 if (cleaned.Count >= 5)
                 {
                     var median = ComputeMedianPoint(cleaned);
-                    // Invert target Y: screen Y=0 is top, but tracker Y=0 is bottom
-                    medians.Add((median.x, median.y, target.x, 1.0 - target.y));
+                    // Both tracker (ADCS) and screen use Y=0 at top — no inversion needed
+                    medians.Add((median.x, median.y, target.x, target.y));
                     validPoints++;
                 }
             }
@@ -247,6 +265,18 @@ public class CalibrationEngine
         var affineX = FitAffine(rawPts, tgtX);
         var affineY = FitAffine(rawPts, tgtY);
 
+        // Singular affine fit (e.g. all medians collinear/identical because the
+        // tracker was stuck): fail gracefully instead of fitting noise.
+        if (affineX.Any(double.IsNaN) || affineX.Any(double.IsInfinity) ||
+            affineY.Any(double.IsNaN) || affineY.Any(double.IsInfinity))
+        {
+            result.Quality = CalibrationQuality.Failed;
+            result.MeanErrorDegrees = 99;
+            result.MaxErrorDegrees = 99;
+            result.RmsNoiseDegrees = 99;
+            return result;
+        }
+
         // Step 3: Compute residuals and fit polynomial correction
         var residualX = new List<double>();
         var residualY = new List<double>();
@@ -258,8 +288,8 @@ public class CalibrationEngine
             residualY.Add(medians[i].targetY - predY);
         }
 
-        // Stage 2: polynomial on residuals (if enough points)
-        if (validPoints >= 6)
+        // Stage 2: polynomial on residuals (only with enough degrees of freedom)
+        if (validPoints >= MIN_POINTS_POLY)
         {
             var polyCorrX = FitPolynomial(rawPts, residualX);
             var polyCorrY = FitPolynomial(rawPts, residualY);

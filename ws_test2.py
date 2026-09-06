@@ -1,4 +1,8 @@
-"""Test WebSocket connection to TobiiGhost with various paths"""
+"""Test WebSocket connection to TobiiGhost with various paths.
+
+NOTE (audit 2026-09-06): see ws_test.py — Ghost has no documented local WS
+API; these path probes are shots in the dark, kept as experiments.
+"""
 import websocket
 
 paths = [
@@ -17,8 +21,8 @@ paths = [
 ]
 
 for path in paths:
+    url = f"ws://127.0.0.1:7890{path}"
     try:
-        url = f"ws://127.0.0.1:7890{path}"
         ws = websocket.create_connection(url, timeout=2)
         print(f"Connected to {url}!")
         ws.send('{"type":"ping"}')

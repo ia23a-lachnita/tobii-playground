@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 
 namespace TobiiGazeVisualizer;
 
@@ -6,6 +7,12 @@ namespace TobiiGazeVisualizer;
 /// One Euro Filter - industry standard for real-time gaze smoothing.
 /// Adaptive low-pass filter: strong smoothing at low speeds, minimal lag at high speeds.
 /// Reference: Casiez et al. (2012) CHI
+///
+/// Tuned for ~90 Hz gaze in NORMALIZED [0,1] coordinates (NOT pixels):
+/// minCutoff 0.1 Hz locks fixations (kills 2-8 Hz ocular tremor + tracker noise),
+/// beta 10 opens the cutoff to tens of Hz during saccades (velocities here are
+/// a few units/sec, so beta must be ~100x larger than pixel-space values).
+/// Pixel-space equivalents would be minCutoff 0.1, beta ~0.005-0.015.
 /// </summary>
 public class OneEuroFilter
 {
@@ -16,9 +23,9 @@ public class OneEuroFilter
     private readonly LowpassFilter _dxFilt = new();
     private const double DCutoff = 1.0;
 
-    /// <param name="minCutoff">Controls jitter at slow speeds (default 1.0 Hz, lower = more smoothing)</param>
-    /// <param name="beta">Controls lag at high speeds (default 0.5, higher = less lag during fast movement)</param>
-    public OneEuroFilter(double minCutoff = 1.0, double beta = 0.5)
+    /// <param name="minCutoff">Controls jitter at slow speeds (lower = more smoothing)</param>
+    /// <param name="beta">Controls lag at high speeds (higher = less lag during fast movement)</param>
+    public OneEuroFilter(double minCutoff = 0.1, double beta = 10.0)
     {
         _minCutoff = minCutoff;
         _beta = beta;
@@ -32,6 +39,13 @@ public class OneEuroFilter
         double edx = _dxFilt.Filter(dx, Alpha(rate, DCutoff));
         double cutoff = _minCutoff + _beta * Math.Abs(edx);
         return _xFilt.Filter(x, Alpha(rate, cutoff));
+    }
+
+    public void Reset()
+    {
+        _firstTime = true;
+        _xFilt.Reset();
+        _dxFilt.Reset();
     }
 
     private static double Alpha(double rate, double cutoff)
@@ -56,39 +70,76 @@ public class LowpassFilter
         _hatXPrev = hatX;
         return hatX;
     }
+
+    public void Reset()
+    {
+        _firstTime = true;
+        _hatXPrev = 0;
+    }
 }
 
 /// <summary>
-/// 2D gaze smoother using paired One Euro Filters.
+/// 2D gaze smoother: paired One Euro Filters plus an I-VT style saccade snap.
+/// Fixations get heavy smoothing (bubble freezes on target like Tobii Ghost);
+/// samples faster than <see cref="SnapVelocity"/> bypass the filter so saccade
+/// landings have zero trailing lag instead of elastic dragging.
+/// Snap threshold 2.0 norm/s ≈ 60-100 deg/s at 60cm viewing distance, cleanly
+/// between smooth pursuit (&lt;0.6 norm/s) and real saccades (100-500 deg/s).
 /// </summary>
 public class GazeSmoother
 {
     private readonly OneEuroFilter _filterX;
     private readonly OneEuroFilter _filterY;
-    private DateTime _lastTime = DateTime.Now;
+    private readonly Stopwatch _clock = Stopwatch.StartNew();
+    private long _lastTicks;
+    private double _lastX, _lastY;
+    private bool _hasLast;
 
-    public GazeSmoother(double minCutoff = 1.0, double beta = 0.5)
+    /// <summary>Normalized units/sec above which the filter snaps to raw.</summary>
+    public double SnapVelocity { get; set; } = 2.0;
+
+    public GazeSmoother(double minCutoff = 0.1, double beta = 10.0)
     {
         _filterX = new OneEuroFilter(minCutoff, beta);
         _filterY = new OneEuroFilter(minCutoff, beta);
+        _lastTicks = _clock.ElapsedTicks;
     }
 
     public (double x, double y) Filter(double rawX, double rawY)
     {
-        var now = DateTime.Now;
-        double rate = 1.0 / Math.Max((now - _lastTime).TotalSeconds, 0.001);
-        _lastTime = now;
+        long now = _clock.ElapsedTicks;
+        // Stopwatch resolution (not DateTime.Now ~15ms wall clock) so the rate
+        // estimate is stable at 90 Hz.
+        double dt = Math.Max((now - _lastTicks) / (double)Stopwatch.Frequency, 0.001);
+        _lastTicks = now;
+        double rate = 1.0 / dt;
 
-        return (
+        if (_hasLast)
+        {
+            double dist = Math.Sqrt((rawX - _lastX) * (rawX - _lastX) + (rawY - _lastY) * (rawY - _lastY));
+            if (dist / dt > SnapVelocity)
+            {
+                // Saccade: drop filter history and snap to the landing point.
+                _filterX.Reset();
+                _filterY.Reset();
+            }
+        }
+
+        var result = (
             _filterX.Filter(rawX, rate),
             _filterY.Filter(rawY, rate)
         );
+        _lastX = rawX;
+        _lastY = rawY;
+        _hasLast = true;
+        return result;
     }
 
     public void Reset()
     {
-        _filterX.Filter(0, 1);
-        _filterY.Filter(0, 1);
-        _lastTime = DateTime.Now;
+        _filterX.Reset();
+        _filterY.Reset();
+        _hasLast = false;
+        _lastTicks = _clock.ElapsedTicks;
     }
 }
