@@ -5,8 +5,9 @@ using System.Linq;
 namespace TobiiGazeVisualizer;
 
 /// <summary>
-/// Two-stage calibration: Affine (linear) fit first, then 2nd-order polynomial residual correction.
-/// Uses median for robust centroid extraction. RANSAC outlier rejection.
+/// Per-eye two-stage calibration: affine fit first, then ridge-regularized
+/// 2nd-order polynomial residual correction. Late fusion with affine-MSE
+/// weights. Median + two-pass MAD rejection, LOOCV affine validation.
 /// </summary>
 public class CalibrationEngine
 {
@@ -32,15 +33,19 @@ public class CalibrationEngine
     const int MIN_POINTS_POLY = 8;
 
     // L2 (ridge) penalty added to the polynomial normal-equation diagonal.
-    // Keeps the x^2/xy/y^2 terms small unless the data really needs them.
-    const double RIDGE_LAMBDA = 1e-3;
+    // 1e-2 keeps 2nd-order curvature tame at screen peripheries where the fit
+    // extrapolates (2nd-opinion: affine-stage evaluation, stronger poly prior).
+    const double RIDGE_LAMBDA = 1e-2;
 
     const double Q42_SCALE = 4398046511104.0;
 
     public class PointSamples
     {
+        public List<(double x, double y)> LeftSamples { get; } = [];
+        public List<(double x, double y)> RightSamples { get; } = [];
+        // Legacy combined pool (kept for compat, unused by the per-eye fit).
         public List<(double x, double y)> AllSamples { get; } = [];
-        public bool Valid => AllSamples.Count > 10;
+        public bool Valid => LeftSamples.Count + RightSamples.Count > 10;
     }
 
     static double Median(List<double> values)
@@ -61,22 +66,30 @@ public class CalibrationEngine
     }
 
     /// <summary>
-    /// Remove outliers beyond 2 standard deviations from centroid.
+    /// Two-pass MAD rejection. sigma_hat = 1.4826 * MAD has a 50% breakdown
+    /// point (best possible) for centroid estimation; RANSAC buys nothing for
+    /// fitting a 0-D point and adds nondeterminism (2nd-opinion review).
     /// </summary>
     static List<(double x, double y)> RemoveOutliers(List<(double x, double y)> samples)
     {
-        if (samples.Count < 6) return samples;
-
-        double meanX = samples.Average(s => s.x);
-        double meanY = samples.Average(s => s.y);
-        double stdX = Math.Sqrt(samples.Average(s => (s.x - meanX) * (s.x - meanX)));
-        double stdY = Math.Sqrt(samples.Average(s => (s.y - meanY) * (s.y - meanY)));
-
-        double threshold = 2.0;
-        return samples
-            .Where(s => Math.Abs(s.x - meanX) < threshold * Math.Max(stdX, 0.01)
-                     && Math.Abs(s.y - meanY) < threshold * Math.Max(stdY, 0.01))
-            .ToList();
+        var current = samples;
+        for (int pass = 0; pass < 2; pass++)
+        {
+            if (current.Count < 6) return current;
+            var median = ComputeMedianPoint(current);
+            double madX = Median(current.Select(s => Math.Abs(s.x - median.x)).ToList());
+            double madY = Median(current.Select(s => Math.Abs(s.y - median.y)).ToList());
+            double sigX = Math.Max(1.4826 * madX, 1e-4);
+            double sigY = Math.Max(1.4826 * madY, 1e-4);
+            const double threshold = 2.5;
+            var kept = current
+                .Where(s => Math.Abs(s.x - median.x) < threshold * sigX
+                         && Math.Abs(s.y - median.y) < threshold * sigY)
+                .ToList();
+            if (kept.Count < 5) return current; // never gut the pool
+            current = kept;
+        }
+        return current;
     }
 
     static double[] FitAffine(List<(double rawX, double rawY)> rawPoints, List<double> targetValues)
@@ -219,134 +232,181 @@ public class CalibrationEngine
              + coeff[3] * x * y + coeff[4] * x * x + coeff[5] * y * y;
     }
 
-    public CalibrationResult ComputeCalibration(PointSamples[] pointSamples)
+    /// <summary>
+    /// Fit one eye: affine stage, then ridge-regularized polynomial on the
+    /// residuals (only with MIN_POINTS_POLY+ points). Returns 6-coeff mappings
+    /// plus the AFFINE-stage MSE (normalized units^2) used for fusion weights —
+    /// affine MSE, because poly-residual MSE would let an overfitted eye steal
+    /// all the weight (2nd-opinion review).
+    /// </summary>
+    static (double[] coeffX, double[] coeffY, double affineMse) FitEye(
+        List<(double rawX, double rawY)> rawPts, List<double> tgtX, List<double> tgtY)
     {
-        var result = new CalibrationResult();
-
-        // Step 1: Extract median point per calibration target
-        var medians = new List<(double rawX, double rawY, double targetX, double targetY)>();
-        int validPoints = 0;
-
-        for (int i = 0; i < Math.Min(9, pointSamples.Length); i++)
-        {
-            var ps = pointSamples[i];
-            var target = GridTargets[i];
-
-            if (ps.Valid)
-            {
-                var cleaned = RemoveOutliers(ps.AllSamples);
-                if (cleaned.Count >= 5)
-                {
-                    var median = ComputeMedianPoint(cleaned);
-                    // Both tracker (ADCS) and screen use Y=0 at top — no inversion needed
-                    medians.Add((median.x, median.y, target.x, target.y));
-                    validPoints++;
-                }
-            }
-        }
-
-        result.PointsCollected = validPoints;
-        result.PointsFailed = GridTargets.Length - validPoints;
-
-        if (validPoints < MIN_POINTS_REQUIRED)
-        {
-            result.Quality = CalibrationQuality.Failed;
-            result.MeanErrorDegrees = 99;
-            result.MaxErrorDegrees = 99;
-            result.RmsNoiseDegrees = 99;
-            return result;
-        }
-
-        // Step 2: Fit affine (linear) model
-        var rawPts = medians.Select(m => (m.rawX, m.rawY)).ToList();
-        var tgtX = medians.Select(m => m.targetX).ToList();
-        var tgtY = medians.Select(m => m.targetY).ToList();
+        double[] identX = [0, 1, 0, 0, 0, 0];
+        double[] identY = [0, 0, 1, 0, 0, 0];
+        if (rawPts.Count < 3) return (identX, identY, double.PositiveInfinity);
 
         var affineX = FitAffine(rawPts, tgtX);
         var affineY = FitAffine(rawPts, tgtY);
-
-        // Singular affine fit (e.g. all medians collinear/identical because the
-        // tracker was stuck): fail gracefully instead of fitting noise.
         if (affineX.Any(double.IsNaN) || affineX.Any(double.IsInfinity) ||
             affineY.Any(double.IsNaN) || affineY.Any(double.IsInfinity))
+            return (identX, identY, double.PositiveInfinity);
+
+        double mse = 0;
+        for (int i = 0; i < rawPts.Count; i++)
+        {
+            double ex = EvalAffine(affineX, rawPts[i].rawX, rawPts[i].rawY) - tgtX[i];
+            double ey = EvalAffine(affineY, rawPts[i].rawX, rawPts[i].rawY) - tgtY[i];
+            mse += ex * ex + ey * ey;
+        }
+        mse /= rawPts.Count;
+
+        if (rawPts.Count < MIN_POINTS_POLY)
+            return ([affineX[0], affineX[1], affineX[2], 0, 0, 0],
+                    [affineY[0], affineY[1], affineY[2], 0, 0, 0], mse);
+
+        var residualX = new List<double>();
+        var residualY = new List<double>();
+        for (int i = 0; i < rawPts.Count; i++)
+        {
+            residualX.Add(tgtX[i] - EvalAffine(affineX, rawPts[i].rawX, rawPts[i].rawY));
+            residualY.Add(tgtY[i] - EvalAffine(affineY, rawPts[i].rawX, rawPts[i].rawY));
+        }
+        var polyCorrX = FitPolynomial(rawPts, residualX);
+        var polyCorrY = FitPolynomial(rawPts, residualY);
+
+        return ([affineX[0] + polyCorrX[0], affineX[1] + polyCorrX[1], affineX[2] + polyCorrX[2],
+                 polyCorrX[3], polyCorrX[4], polyCorrX[5]],
+                [affineY[0] + polyCorrY[0], affineY[1] + polyCorrY[1], affineY[2] + polyCorrY[2],
+                 polyCorrY[3], polyCorrY[4], polyCorrY[5]], mse);
+    }
+
+    public CalibrationResult ComputeCalibration(PointSamples[] pointSamples)
+    {
+        var result = new CalibrationResult();
+        result.PointErrors = new double[GridTargets.Length];
+        Array.Fill(result.PointErrors, double.NaN);
+
+        // Step 1: per-eye median centroids per target
+        var points = new List<(int idx, double lx, double ly, bool hasL,
+                               double rx, double ry, bool hasR, double tx, double ty)>();
+        for (int i = 0; i < Math.Min(GridTargets.Length, pointSamples.Length); i++)
+        {
+            var ps = pointSamples[i];
+            var target = GridTargets[i];
+            bool hasL = false, hasR = false;
+            double lx = 0, ly = 0, rx = 0, ry = 0;
+            if (ps.LeftSamples.Count >= 5)
+            {
+                var m = ComputeMedianPoint(RemoveOutliers(ps.LeftSamples));
+                lx = m.x; ly = m.y; hasL = true;
+            }
+            if (ps.RightSamples.Count >= 5)
+            {
+                var m = ComputeMedianPoint(RemoveOutliers(ps.RightSamples));
+                rx = m.x; ry = m.y; hasR = true;
+            }
+            if (hasL || hasR) points.Add((i, lx, ly, hasL, rx, ry, hasR, target.x, target.y));
+        }
+
+        result.PointsCollected = points.Count;
+        result.PointsFailed = GridTargets.Length - points.Count;
+
+        if (points.Count < MIN_POINTS_REQUIRED)
         {
             result.Quality = CalibrationQuality.Failed;
             result.MeanErrorDegrees = 99;
             result.MaxErrorDegrees = 99;
             result.RmsNoiseDegrees = 99;
+            result.LoocvMeanErrorDegrees = 99;
             return result;
         }
 
-        // Step 3: Compute residuals and fit polynomial correction
-        var residualX = new List<double>();
-        var residualY = new List<double>();
-        for (int i = 0; i < medians.Count; i++)
-        {
-            double predX = EvalAffine(affineX, medians[i].rawX, medians[i].rawY);
-            double predY = EvalAffine(affineY, medians[i].rawX, medians[i].rawY);
-            residualX.Add(medians[i].targetX - predX);
-            residualY.Add(medians[i].targetY - predY);
-        }
+        // Step 2: fit each eye independently (late fusion preserves per-eye optics)
+        var rawL = points.Where(p => p.hasL).Select(p => (p.lx, p.ly)).ToList();
+        var tgtLX = points.Where(p => p.hasL).Select(p => p.tx).ToList();
+        var tgtLY = points.Where(p => p.hasL).Select(p => p.ty).ToList();
+        var rawR = points.Where(p => p.hasR).Select(p => (p.rx, p.ry)).ToList();
+        var tgtRX = points.Where(p => p.hasR).Select(p => p.tx).ToList();
+        var tgtRY = points.Where(p => p.hasR).Select(p => p.ty).ToList();
 
-        // Stage 2: polynomial on residuals (only with enough degrees of freedom)
-        if (validPoints >= MIN_POINTS_POLY)
-        {
-            var polyCorrX = FitPolynomial(rawPts, residualX);
-            var polyCorrY = FitPolynomial(rawPts, residualY);
+        var (lcx, lcy, lMse) = FitEye(rawL, tgtLX, tgtLY);
+        var (rcx, rcy, rMse) = FitEye(rawR, tgtRX, tgtRY);
 
-            // Combine: final = affine + poly_correction
-            // Store as 6-coeff polynomial that includes affine terms
-            result.LeftCoeffX = [
-                affineX[0] + polyCorrX[0],
-                affineX[1] + polyCorrX[1],
-                affineX[2] + polyCorrX[2],
-                polyCorrX[3],
-                polyCorrX[4],
-                polyCorrX[5]
-            ];
-            result.LeftCoeffY = [
-                affineY[0] + polyCorrY[0],
-                affineY[1] + polyCorrY[1],
-                affineY[2] + polyCorrY[2],
-                polyCorrY[3],
-                polyCorrY[4],
-                polyCorrY[5]
-            ];
-        }
-        else
-        {
-            // Fallback: just affine, padded to 6 coefficients
-            result.LeftCoeffX = [affineX[0], affineX[1], affineX[2], 0, 0, 0];
-            result.LeftCoeffY = [affineY[0], affineY[1], affineY[2], 0, 0, 0];
-        }
+        result.LeftCoeffX = lcx; result.LeftCoeffY = lcy;
+        result.RightCoeffX = rcx; result.RightCoeffY = rcy;
 
-        // Use same for right eye
-        result.RightCoeffX = (double[])result.LeftCoeffX.Clone();
-        result.RightCoeffY = (double[])result.LeftCoeffY.Clone();
-        result.LeftWeight = 1.0;
-        result.RightWeight = 0.0;
+        double lw = double.IsInfinity(lMse) ? 0 : 1.0 / (lMse + 1e-9);
+        double rw = double.IsInfinity(rMse) ? 0 : 1.0 / (rMse + 1e-9);
+        if (lw + rw <= 0) { lw = 1; rw = 0; }
+        result.LeftWeight = lw / (lw + rw);
+        result.RightWeight = rw / (lw + rw);
 
-        // Compute quality metrics
+        // Step 3: in-sample per-point fused errors (drives retry-worst-point UI)
         double totalError = 0, maxError = 0;
-        for (int i = 0; i < medians.Count; i++)
+        foreach (var p in points)
         {
-            var (cx, cy) = result.Transform(medians[i].rawX, medians[i].rawY, true);
-            double err = AngularError(cx, cy, medians[i].targetX, medians[i].targetY);
+            var (cx, cy) = result.TransformFused(p.lx, p.ly, p.rx, p.ry, p.hasL, p.hasR);
+            double err = AngularError(cx, cy, p.tx, p.ty);
+            result.PointErrors[p.idx] = err;
             totalError += err;
             maxError = Math.Max(maxError, err);
         }
-
-        result.MeanErrorDegrees = medians.Count > 0 ? totalError / medians.Count : 99;
+        result.MeanErrorDegrees = totalError / points.Count;
         result.MaxErrorDegrees = maxError;
 
-        // RMS noise from sample scatter
+        // Step 4: LOOCV, affine stage only. Poly LOOCV on 8 points (df=2) flares
+        // at held-out corners and would punish genuine foveal accuracy, so the
+        // honest generalization metric is affine-only (2nd-opinion review).
+        double loocvSum = 0;
+        int loocvCount = 0;
+        foreach (var held in points)
+        {
+            var trainL = points.Where(p => p.idx != held.idx && p.hasL).ToList();
+            var trainR = points.Where(p => p.idx != held.idx && p.hasR).ToList();
+            bool predL = false, predR = false;
+            double pxL = 0, pyL = 0, pxR = 0, pyR = 0;
+            if (held.hasL && trainL.Count >= 3)
+            {
+                var ax = FitAffine(trainL.Select(p => (p.lx, p.ly)).ToList(), trainL.Select(p => p.tx).ToList());
+                var ay = FitAffine(trainL.Select(p => (p.lx, p.ly)).ToList(), trainL.Select(p => p.ty).ToList());
+                if (!ax.Any(double.IsNaN) && !ay.Any(double.IsNaN))
+                {
+                    pxL = EvalAffine(ax, held.lx, held.ly);
+                    pyL = EvalAffine(ay, held.lx, held.ly);
+                    predL = true;
+                }
+            }
+            if (held.hasR && trainR.Count >= 3)
+            {
+                var ax = FitAffine(trainR.Select(p => (p.rx, p.ry)).ToList(), trainR.Select(p => p.tx).ToList());
+                var ay = FitAffine(trainR.Select(p => (p.rx, p.ry)).ToList(), trainR.Select(p => p.ty).ToList());
+                if (!ax.Any(double.IsNaN) && !ay.Any(double.IsNaN))
+                {
+                    pxR = EvalAffine(ax, held.rx, held.ry);
+                    pyR = EvalAffine(ay, held.rx, held.ry);
+                    predR = true;
+                }
+            }
+            if (!predL && !predR) continue;
+            double wSum = (predL ? result.LeftWeight : 0) + (predR ? result.RightWeight : 0);
+            double fx = ((predL ? pxL * result.LeftWeight : 0) + (predR ? pxR * result.RightWeight : 0)) / wSum;
+            double fy = ((predL ? pyL * result.LeftWeight : 0) + (predR ? pyR * result.RightWeight : 0)) / wSum;
+            loocvSum += AngularError(fx, fy, held.tx, held.ty);
+            loocvCount++;
+        }
+        result.LoocvMeanErrorDegrees = loocvCount > 0 ? loocvSum / loocvCount : 99;
+
+        // RMS precision from per-eye sample scatter around per-eye medians
         double rmsSum = 0;
         int rmsCount = 0;
-        for (int i = 0; i < Math.Min(9, pointSamples.Length); i++)
+        for (int i = 0; i < Math.Min(GridTargets.Length, pointSamples.Length); i++)
         {
-            if (pointSamples[i].Valid)
+            foreach (var pool in new[] { pointSamples[i].LeftSamples, pointSamples[i].RightSamples })
             {
-                var cleaned = RemoveOutliers(pointSamples[i].AllSamples);
+                if (pool.Count == 0) continue;
+                var cleaned = RemoveOutliers(pool);
+                if (cleaned.Count == 0) continue;
                 var median = ComputeMedianPoint(cleaned);
                 foreach (var s in cleaned)
                 {
@@ -359,7 +419,7 @@ public class CalibrationEngine
             ? Math.Sqrt(rmsSum / rmsCount) * 597.9 / 600.0 * (180.0 / Math.PI)
             : 99;
 
-        // Quality rating (relaxed thresholds)
+        // Quality rating (LOOCV shown but not rated: held-out corners inflate it)
         if (result.PointsCollected < MIN_POINTS_REQUIRED)
             result.Quality = CalibrationQuality.Failed;
         else if (result.MeanErrorDegrees > HARD_FAIL_MEAN_ERROR || result.RmsNoiseDegrees > HARD_FAIL_RMS)

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Linq;
@@ -8,14 +9,15 @@ using System.Windows.Forms;
 namespace TobiiGazeVisualizer;
 
 /// <summary>
-/// 9-point calibration with smooth minimum-jerk dot transitions,
-/// blink-aware sample collection, and dynamic sample quota.
+/// 9-point per-eye calibration with smooth minimum-jerk dot transitions,
+/// blink-aware sample collection, velocity-gated fixation sampling,
+/// and retry-worst-point.
 /// </summary>
 public class CalibrationForm : Form
 {
     readonly TobiiUsb _tracker;
     readonly CalibrationEngine _engine;
-    List<(double x, double y, long timestampMs, bool valid)>[] _allSamples;
+    List<(double x, double y, long timestampMs, bool isLeft)>[] _allSamples;
     CalibrationResult? _result;
 
     int _currentPoint;
@@ -27,10 +29,16 @@ public class CalibrationForm : Form
 
     // Timing (ms)
     const int TRANSIT_MS = 600;      // smooth dot movement
-    const int SETTLE_MS = 200;       // eye settle after dot arrives
+    const int SETTLE_MS = 350;       // eye settle after dot arrives (saccade latency
+                                     // alone is 180-250 ms + flight + PSO; 200 ms
+                                     // sampled mid-saccade)
     const int COLLECT_MIN_MS = 800;  // minimum collection after settle
     const int COLLECT_MAX_MS = 2000; // maximum collection window
-    const int SAMPLE_QUOTA = 40;     // target valid samples
+    const int SAMPLE_QUOTA = 40;     // target valid eye-samples
+
+    // Fixation gate (normalized units/sec ≈ 35 deg/s at 60 cm on 27"): samples
+    // faster than this are saccades/glissades/PSOs, not fixations.
+    const double VELOCITY_GATE = 0.7;
 
     // Blink masking (ms)
     const int BLINK_PRE_MASK_MS = 40;   // discard before blink
@@ -52,6 +60,16 @@ public class CalibrationForm : Form
     int _validSampleCount;
     DateTime _lastGazeEvent = DateTime.UtcNow;
 
+    // Velocity gate timing (Stopwatch: DateTime quantizes ~15 ms, useless at 90 Hz)
+    readonly Stopwatch _clock = Stopwatch.StartNew();
+    long _prevTicks;
+    double _prevX, _prevY;
+    bool _hasPrev;
+
+    // Retry-worst-point state
+    bool _retrySingle;
+    int _worstIdx = -1;
+
     // Blink tracking
     bool _lastValid;
     DateTime _lastBlinkEnd;
@@ -64,9 +82,10 @@ public class CalibrationForm : Form
     {
         _tracker = tracker;
         _engine = new CalibrationEngine();
-        _allSamples = new List<(double x, double y, long timestampMs, bool valid)>[9];
+        _allSamples = new List<(double x, double y, long timestampMs, bool isLeft)>[9];
         for (int i = 0; i < 9; i++)
             _allSamples[i] = new List<(double, double, long, bool)>();
+        _prevTicks = _clock.ElapsedTicks;
 
         Text = "Eye Tracker Calibration";
         Size = new Size(1920, 1080);
@@ -80,7 +99,7 @@ public class CalibrationForm : Form
         var screen = Screen.PrimaryScreen?.Bounds ?? new Rectangle(0, 0, 1920, 1080);
         Bounds = screen;
 
-        _tracker.OnGaze += OnGaze;
+        _tracker.OnGazeStereo += OnGazeStereo;
 
         _animTimer = new System.Windows.Forms.Timer { Interval = 16 };
         _animTimer.Tick += AnimTick;
@@ -178,10 +197,15 @@ public class CalibrationForm : Form
                         if (IsDisposed) return;
                         BeginInvoke(() =>
                         {
-                            if (_currentPoint < CalibrationEngine.GridTargets.Length - 1)
+                            if (_retrySingle)
+                            {
+                                _retrySingle = false;
+                                ComputeAndShow();
+                            }
+                            else if (_currentPoint < CalibrationEngine.GridTargets.Length - 1)
                                 StartPoint(_currentPoint + 1);
                             else
-                                FinishCalibration();
+                                ComputeAndShow();
                         });
                     }, null, 200, Timeout.Infinite);
                 }
@@ -193,22 +217,39 @@ public class CalibrationForm : Form
         Invalidate();
     }
 
-    void OnGaze(double rawX, double rawY, bool leftOk, bool rightOk)
+    void OnGazeStereo(double lx, double ly, bool lok, double rx, double ry, bool rok)
     {
         _lastGazeEvent = DateTime.UtcNow;
-        rawX = Math.Clamp(rawX, 0, 1);
-        rawY = Math.Clamp(rawY, 0, 1);
 
-        _gazeX = rawX;
-        _gazeY = rawY;
-        _gazeValid = leftOk || rightOk;
+        // Representative position for display + velocity gate (prefer left).
+        double px = lok ? lx : rx;
+        double py = lok ? ly : ry;
+        bool anyValid = lok || rok;
+        px = Math.Clamp(px, -0.5, 1.5);
+        py = Math.Clamp(py, -0.5, 1.5);
+
+        _gazeX = px;
+        _gazeY = py;
+        _gazeValid = anyValid;
+
+        // Velocity gate: update reference every sample, decide in Collect.
+        long nowTicks = _clock.ElapsedTicks;
+        double dt = _hasPrev
+            ? Math.Max((nowTicks - _prevTicks) / (double)Stopwatch.Frequency, 0.001)
+            : 1.0;
+        double speed = _hasPrev
+            ? Math.Sqrt((px - _prevX) * (px - _prevX) + (py - _prevY) * (py - _prevY)) / dt
+            : 0;
+        _prevTicks = nowTicks;
+        _prevX = px; _prevY = py;
+        _hasPrev = true;
 
         if (_phase != Phase.Collect) return;
 
         long tsMs = (long)(DateTime.UtcNow - _phaseStart).TotalMilliseconds;
 
-        // Blink detection and masking
-        bool currentlyValid = leftOk || rightOk;
+        // Blink detection and masking (either-eye validity)
+        bool currentlyValid = anyValid;
 
         if (_lastValid && !currentlyValid)
         {
@@ -242,36 +283,50 @@ public class CalibrationForm : Form
 
         if (!currentlyValid) return;
 
-        _allSamples[_currentPoint].Add((rawX, rawY, tsMs, true));
-        _validSampleCount++;
+        // Fixation-only data: drop saccades, glissades, post-saccadic wobble.
+        if (speed > VELOCITY_GATE) return;
+
+        if (lok)
+        {
+            _allSamples[_currentPoint].Add((Math.Clamp(lx, 0, 1), Math.Clamp(ly, 0, 1), tsMs, true));
+            _validSampleCount++;
+        }
+        if (rok)
+        {
+            _allSamples[_currentPoint].Add((Math.Clamp(rx, 0, 1), Math.Clamp(ry, 0, 1), tsMs, false));
+            _validSampleCount++;
+        }
     }
 
-    void FinishCalibration()
+    void ComputeAndShow()
     {
-        _tracker.OnGaze -= OnGaze;
-
         var pointSamples = new CalibrationEngine.PointSamples[9];
         for (int i = 0; i < 9; i++)
         {
             pointSamples[i] = new CalibrationEngine.PointSamples();
-            // Only use valid samples
-            var validSamples = _allSamples[i]
-                .Where(s => s.valid)
-                .Select(s => (s.x, s.y))
-                .ToList();
-            pointSamples[i].AllSamples.AddRange(validSamples);
+            pointSamples[i].LeftSamples.AddRange(
+                _allSamples[i].Where(s => s.isLeft).Select(s => (s.x, s.y)));
+            pointSamples[i].RightSamples.AddRange(
+                _allSamples[i].Where(s => !s.isLeft).Select(s => (s.x, s.y)));
         }
 
         _result = _engine.ComputeCalibration(pointSamples);
-        WasCancelled = false;
 
-        Invalidate();
-        System.Threading.Timer? closeTimer = null;
-        closeTimer = new System.Threading.Timer(_ =>
+        // Worst usable point drives the retry hint (NaN = unusable, skipped).
+        _worstIdx = -1;
+        double worstErr = double.NaN;
+        for (int i = 0; i < _result.PointErrors.Length; i++)
         {
-            closeTimer?.Dispose();
-            if (!IsDisposed) BeginInvoke(() => Close());
-        }, null, 3000, Timeout.Infinite);
+            double e = _result.PointErrors[i];
+            if (!double.IsNaN(e) && (double.IsNaN(worstErr) || e > worstErr))
+            {
+                worstErr = e;
+                _worstIdx = i;
+            }
+        }
+
+        // Stay open: Enter accepts, R retries the worst point, ESC cancels.
+        Invalidate();
     }
 
     protected override void OnPaint(PaintEventArgs e)
@@ -389,13 +444,26 @@ public class CalibrationForm : Form
         string stats = $"Mean Error: {r.MeanErrorDegrees:F2}°  |  Max Error: {r.MaxErrorDegrees:F2}°  |  RMS: {r.RmsNoiseDegrees:F2}°";
         g.DrawString(stats, font, Brushes.LightGray, cx - 250, cy - 10);
 
-        string points = $"Points: {r.PointsCollected}/{CalibrationEngine.GridTargets.Length} collected";
-        g.DrawString(points, font, Brushes.LightGray, cx - 250, cy + 30);
+        string loocv = $"LOOCV accuracy: {r.LoocvMeanErrorDegrees:F2}° (leave-one-out, affine)";
+        g.DrawString(loocv, font, Brushes.LightGray, cx - 250, cy + 22);
+
+        string points = $"Points: {r.PointsCollected}/{CalibrationEngine.GridTargets.Length} collected  |  " +
+            $"L/R weight: {r.LeftWeight:F2}/{r.RightWeight:F2}";
+        g.DrawString(points, font, Brushes.LightGray, cx - 250, cy + 54);
+
+        if (_worstIdx >= 0 && !double.IsNaN(r.PointErrors[_worstIdx]))
+        {
+            string worst = $"Worst point #{_worstIdx + 1}: {r.PointErrors[_worstIdx]:F2}° — press R to retry it";
+            g.DrawString(worst, smallFont, Brushes.Gold, cx - 250, cy + 92);
+        }
+
+        g.DrawString("ENTER = accept   |   R = retry worst point   |   ESC = cancel",
+            smallFont, Brushes.White, cx - 250, cy + 122);
 
         if (r.Quality == CalibrationQuality.Failed)
         {
             g.DrawString("Position yourself 60-70cm from the tracker and try again.",
-                smallFont, Brushes.OrangeRed, cx - 220, cy + 80);
+                smallFont, Brushes.OrangeRed, cx - 220, cy + 152);
         }
     }
 
@@ -404,14 +472,27 @@ public class CalibrationForm : Form
         if (e.KeyCode == Keys.Escape)
         {
             WasCancelled = true;
-            _tracker.OnGaze -= OnGaze;
+            _tracker.OnGazeStereo -= OnGazeStereo;
             Close();
+        }
+        else if (e.KeyCode == Keys.Enter && _result != null)
+        {
+            WasCancelled = false;
+            _tracker.OnGazeStereo -= OnGazeStereo;
+            Close();
+        }
+        else if (e.KeyCode == Keys.R && _result != null && _worstIdx >= 0)
+        {
+            // Re-collect only the worst point, then recompute everything.
+            _result = null;
+            _retrySingle = true;
+            StartPoint(_worstIdx);
         }
     }
 
     protected override void OnFormClosed(FormClosedEventArgs e)
     {
-        _tracker.OnGaze -= OnGaze;
+        _tracker.OnGazeStereo -= OnGazeStereo;
         _animTimer.Stop();
         base.OnFormClosed(e);
     }

@@ -24,6 +24,17 @@ public class CalibrationResult
     public double MeanErrorDegrees { get; set; }
     public double MaxErrorDegrees { get; set; }
     public double RmsNoiseDegrees { get; set; }
+
+    /// <summary>
+    /// Leave-one-out cross-validation mean error (affine stage only): each
+    /// point predicted by a fit on the other points. Honest generalization
+    /// metric; expected to run hotter than the in-sample mean because held-out
+    /// corners force extrapolation. Shown, not rated.
+    /// </summary>
+    public double LoocvMeanErrorDegrees { get; set; }
+
+    /// <summary>Per-grid-point fused residual errors in degrees, NaN if unusable. Drives retry-worst-point.</summary>
+    public double[] PointErrors { get; set; } = new double[9];
     public int PointsCollected { get; set; }
     public int PointsFailed { get; set; }
     public DateTime Timestamp { get; set; } = DateTime.Now;
@@ -46,7 +57,22 @@ public class CalibrationResult
     }
 
     /// <summary>
-    /// Fused gaze using weighted binocular combination.
+    /// Uncalibrated fallback: plain average of the valid eyes.
+    /// </summary>
+    public static (double x, double y) IdentityFusion(double rawLX, double rawLY,
+        double rawRX, double rawRY, bool leftValid, bool rightValid)
+    {
+        if (leftValid && rightValid)
+            return ((rawLX + rawRX) / 2, (rawLY + rawRY) / 2);
+        else if (leftValid)
+            return (rawLX, rawLY);
+        else if (rightValid)
+            return (rawRX, rawRY);
+        return (0.5, 0.5);
+    }
+
+    /// <summary>
+    /// Fused gaze using per-eye calibrated mappings and MSE weights.
     /// </summary>
     public (double x, double y) TransformFused(double rawLX, double rawLY, double rawRX, double rawRY,
         bool leftValid, bool rightValid)

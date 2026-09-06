@@ -49,7 +49,7 @@ public class MainForm : Form
         for (int i = 0; i < _trail.Length; i++)
             _trail[i] = new PointF(-100, -100);
 
-        _tracker.OnGaze += OnGazeReceived;
+        _tracker.OnGazeStereo += OnGazeStereoReceived;
 
         _renderTimer = new System.Windows.Forms.Timer { Interval = 16 };
         _renderTimer.Tick += (_, _) => Invalidate();
@@ -72,28 +72,28 @@ public class MainForm : Form
         _tracker.StartTracking();
     }
 
-    void OnGazeReceived(double rawX, double rawY, bool leftOk, bool rightOk)
+    void OnGazeStereoReceived(double lx, double ly, bool lok, double rx, double ry, bool rok)
     {
-        _rawX = rawX;
-        _rawY = rawY;
-        _leftDetected = leftOk;
-        _rightDetected = rightOk;
-        _isValid = leftOk || rightOk;
+        _rawX = lok ? lx : rx;
+        _rawY = lok ? ly : ry;
+        _leftDetected = lok;
+        _rightDetected = rok;
+        _isValid = lok || rok;
         _lastGazeEvent = DateTime.UtcNow;
 
         if (_isValid)
         {
-            // Only apply calibration if it's good quality
+            // Per-eye calibration + late fusion. With no (or bad) calibration
+            // the default identity coeffs + 0.5/0.5 weights degrade to a plain
+            // average of the valid eyes — no jumps when one eye drops.
             double cx, cy;
             if (_calibration.Quality == CalibrationQuality.Good || _calibration.Quality == CalibrationQuality.Excellent)
             {
-                (cx, cy) = _calibration.Transform(rawX, rawY, true);
+                (cx, cy) = _calibration.TransformFused(lx, ly, rx, ry, lok, rok);
             }
             else
             {
-                // No calibration or bad calibration - use raw coordinates
-                cx = rawX;
-                cy = rawY;
+                (cx, cy) = CalibrationResult.IdentityFusion(lx, ly, rx, ry, lok, rok);
             }
             _calibX = cx;
             _calibY = cy;
