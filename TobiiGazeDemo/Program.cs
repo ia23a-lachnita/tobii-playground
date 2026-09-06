@@ -102,28 +102,27 @@ class TobiiGazeDirect
         Console.WriteLine($"  plen={daPlen}");
         if (daPlen > 0)
         {
-            // Try to decode the corners
-            int pos = 34; // skip 2 mystery bytes
-            if (pos + 48 <= rsp.Length)
+            // Find the first point3d tag instead of fixed offsets: the payload
+            // starts with a 2-byte prefix plus framing that shifts everything.
+            // (Fixed offsets previously decoded garbage like TR=(0,65536,0).)
+            int pos = FindBytes(rsp, new byte[] { 0x05, 0, 0, 0, 4, 0, 0x03, 0x1F, 0x41 });
+            if (pos < 0) { Console.WriteLine("  (no point3d corners in response)"); }
+            else
             {
-                double tlX = ReadQ42(rsp, pos); pos += 13;
-                double tlY = ReadQ42(rsp, pos); pos += 13;
-                double tlZ = ReadQ42(rsp, pos); pos += 13;
+                double tlX = ReadQ42(rsp, pos + 9); double tlY = ReadQ42(rsp, pos + 22); double tlZ = ReadQ42(rsp, pos + 35);
                 Console.WriteLine($"  TL=({tlX:F1},{tlY:F1},{tlZ:F1})mm");
-            }
-            if (pos + 39 <= rsp.Length)
-            {
-                double trX = ReadQ42(rsp, pos); pos += 13;
-                double trY = ReadQ42(rsp, pos); pos += 13;
-                double trZ = ReadQ42(rsp, pos); pos += 13;
-                Console.WriteLine($"  TR=({trX:F1},{trY:F1},{trZ:F1})mm");
-            }
-            if (pos + 39 <= rsp.Length)
-            {
-                double blX = ReadQ42(rsp, pos); pos += 13;
-                double blY = ReadQ42(rsp, pos); pos += 13;
-                double blZ = ReadQ42(rsp, pos); pos += 13;
-                Console.WriteLine($"  BL=({blX:F1},{blY:F1},{blZ:F1})mm");
+                int pos2 = FindBytes(rsp, new byte[] { 0x05, 0, 0, 0, 4, 0, 0x03, 0x1F, 0x41 }, pos + 9);
+                if (pos2 >= 0)
+                {
+                    double trX = ReadQ42(rsp, pos2 + 9); double trY = ReadQ42(rsp, pos2 + 22); double trZ = ReadQ42(rsp, pos2 + 35);
+                    Console.WriteLine($"  TR=({trX:F1},{trY:F1},{trZ:F1})mm");
+                    int pos3 = FindBytes(rsp, new byte[] { 0x05, 0, 0, 0, 4, 0, 0x03, 0x1F, 0x41 }, pos2 + 9);
+                    if (pos3 >= 0)
+                    {
+                        double blX = ReadQ42(rsp, pos3 + 9); double blY = ReadQ42(rsp, pos3 + 22); double blZ = ReadQ42(rsp, pos3 + 35);
+                        Console.WriteLine($"  BL=({blX:F1},{blY:F1},{blZ:F1})mm");
+                    }
+                }
             }
         }
 
@@ -236,6 +235,18 @@ class TobiiGazeDirect
         buf[n++] = (byte)(scaled >> 8);
         buf[n++] = (byte)scaled;
         return n - offset;
+    }
+
+    static int FindBytes(byte[] data, byte[] pattern, int from = 0)
+    {
+        for (int i = from; i + pattern.Length <= data.Length; i++)
+        {
+            bool match = true;
+            for (int j = 0; j < pattern.Length; j++)
+                if (data[i + j] != pattern[j]) { match = false; break; }
+            if (match) return i;
+        }
+        return -1;
     }
 
     static double ReadQ42(byte[] d, int o)

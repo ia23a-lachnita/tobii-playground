@@ -229,6 +229,7 @@ public class TobiiUsb : IDisposable
         int colCount = (int)((rowTag >> 16) & 0xFFF);
 
         double gazeX = -1, gazeY = -1;
+        bool hasGaze = false;
         uint validL = 4, validR = 4;
 
         for (int i = 0; i < colCount && pos + 18 <= end; i++)
@@ -269,7 +270,7 @@ public class TobiiUsb : IDisposable
                         double px = ReadQ42Signed(buf, pos); pos += 8;
                         pos += 5;
                         double py = ReadQ42Signed(buf, pos); pos += 8;
-                        if (colId == 0x1c) { gazeX = px; gazeY = py; } // combined binocular 2D
+                        if (colId == 0x1c) { gazeX = px; gazeY = py; hasGaze = true; } // combined binocular 2D
                     }
                     else if (structTag == 0x031F41) // point3d
                     {
@@ -288,7 +289,13 @@ public class TobiiUsb : IDisposable
         done:
 
         bool isValid = validL == 0 || validR == 0;
-        if (gazeX >= 0 && gazeY >= 0)
+        // NOTE: no >= 0 gate here. ADCS values legitimately go negative outside
+        // the display plane (demo showed GAZE=(0.45,-0.12) while looking at the
+        // screen). The old `gazeX >= 0 && gazeY >= 0` check confused "column not
+        // found" (sentinel -1) with "negative coordinate" and dropped every
+        // edge frame -> no OnGaze events -> "Signal lost" at top/left edges.
+        // Out-of-range pinning is the calibration Transform's clamp job.
+        if (hasGaze)
         {
             IsTracking = isValid;
             OnGaze?.Invoke(gazeX, gazeY, validL == 0, validR == 0);
