@@ -2,7 +2,7 @@
 analyze_function spillover JSON for the VID:PID gate function."""
 import re, json, sys
 
-f = r"C:\Users\xursc\AppData\Local\hermes\cache\spillover\call_f90b1843e297.txt"
+f = r"C:\Users\xursc\AppData\Local\hermes\cache\spillover\chatcmpl-tool-b8e36de21ad79ff7.txt"
 s = open(f, encoding="utf-8", errors="replace").read()
 
 def extract_json_string(s, start):

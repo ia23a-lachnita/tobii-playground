@@ -220,3 +220,71 @@ deploy: `with pids: (0x314)`, `Target PID [0/1]: (0x0314)`, then device-created.
   .bak_fwcheck. Applied to repo copy, awaiting admin deploy.
 - Repo copy now carries THREE patches (imm gate 0xE7B2C, log string 0x43e34c,
   fw-check 0x2D2465). Installed copy carries patches 1+2 only.
+
+## Capability-wall hunt 2026-10-17 late — full chain mapped (native, Ghidra/rea)
+
+New wall after PID+FW gates: Ghost (ET5 client) says "We only discovered devices
+that doesn't support eyetracking" while the runtime side is fully healthy
+(algo init, plane config, PRP server listening, clients handshaking then
+disconnecting). Live log decisive lines:
+  Could not get sub platform type / lot id / integration id / calibration
+  version / calibration date   (5L does not report ET5 identity fields)
+  Found unmapped stream 0      (device-reported stream id list contains id 0)
+
+Verified chain (all Ghidra assembly/pseudocode against the installed,
+already-patched service binary):
+
+1. setup_device_info (FUN_1402640d0, caps ctx = param_2):
+   - +0xa5b0 = 1 only when tracker-properties, integration-type and platform-type
+     queries all succeed (live: they did).
+   - +0xae34 = sub-platform bucket: strncmp(first 4 bytes of integration-type
+     string, "HMD") == 0 -> 1; else strcmp("Internal_display") -> 2; else 0.
+     Magic confirmed: DAT_140469660 = 48 4d 44 ("HMD").
+   - strcmp parity per identity field: +0x178 (sub platform type), +0x1d0 (lot
+     id), +0x218 (integration id), +0x2b0 (calibration version), +0x348
+     (calibration date) each gated on a ==1 presence flag, else log
+     "Could not get <field>". 5L reports platform type (+0xfc present) but none
+     of the five identity fields.
+
+2. stream_type_receiver (FUN_140264c90, platmod_castor_setup_capabilities.cpp):
+   - dispatch on device-reported stream id (param_1->[0]).
+   - Mapped ids: 1,2,3,4,5,7,9,0xc,0xd,0xe,0xf,0x10,0x11,0x12,0x15.
+     Id 0 -> default block: only logs "Found unmapped stream %d".
+   - stream 5 (== the 5L's wire gaze subscribe id 0x0500 >> 8) handler at
+     VA 0x14026501e appends the gaze capability entries:
+     FUN_140263a90(ctx,0/1/2) + entry 3 at ctx+0xd8 array
+     (fields 3/0x10/0x11 + count) UNLESS (a5b0==1 && ae34==1).
+   - For "contains X" pre-checks the receiver scans the device id list at
+     [ttp+0xf0]=count, [ttp+0xf4]=ids.
+
+3. tracker_usb_ttp_t::get_capabilities (FUN_1402b7b90):
+   - request op = 0x546 (request builder FUN_1402c5bd0: MOV [RSP+0x20], 0x546;
+     the response-section pull is FUN_1402c1900(resp+0x28, 0x16)).
+   - parse: entries 0x7c bytes apart at [container+0x10], count at
+     [container+8]; per entry: u32 id at +0 (only ids < 0xe accepted),
+     5-byte value at +4 compared against "true" (DAT_14112ea88 = 74 72 75 65
+     00), boolean stored into the caps flag struct (0xb8 bytes, memset first).
+   - get_capabilities_all (FUN_1402b7eb0) is the same walker over feature ids
+     1000..1034 (0x3e9..0x40a), request op 0x547 (builder FUN_1402c5bf0).
+   - for-each-stream dispatch into stream_type_receiver:
+     FUN_140263c90 -> FUN_1402b3200 (vtable slot +0x48, tracker_usb_ttp_t
+     interface) -> callback per id.
+
+4. FW-gate (previous patch, re-confirmed): FUN_1402d2f30, strcmp embedded-vs-
+   device version; equal -> normal create; differ -> upgrade opcode 0x31041 via
+   FUN_1403b4640. Patch: JMP over the upgrade branch at file 0x2D2465.
+
+Second opinion (antigravity, required before implementing): verdict "No — not
+safe as clean fix, viable only as quick dirty test" on the naive patch
+(default-block entry VA 0x140265284 -> JMP stream-5 handler, 5 bytes E9 95 FD
+FF FF). Reason: default block is a catch-all for ALL unmapped ids, capability
+registration is only the announcement layer (a separate demuxer must also
+accept stream 0), and the root cause is more likely the wire id unpack:
+(u8)0x0500 == 0 vs 0x0500 >> 8 == 5 — an endianness/truncation issue in the
+id parse, which would fix capability negotiation AND data routing in one place.
+
+Next experiment (probe_caps.py): stop the service, query the 5L directly over
+WinUSB with op 0x546 (+0x547), dump the raw response. Ground truth: the exact
+stream-id encoding the 5L returns (small ints? 16-bit 0x0500-style?) tells us
+whether the fix belongs in the parse (16-bit id handling) or in the dispatch
+table. Script written, verified with python -c compile; ready to run.
