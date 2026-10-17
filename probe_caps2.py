@@ -183,8 +183,8 @@ def find_device():
         )
         if not dev_info or dev_info == INVALID_HANDLE_VALUE:
             continue
-        interface_data = ctypes.create_string_buffer(32)
-        ctypes.cast(interface_data, POINTER(wintypes.DWORD))[0] = 32
+        interface_data = SP_DEVICE_INTERFACE_DATA()
+        interface_data.cbSize = ctypes.sizeof(SP_DEVICE_INTERFACE_DATA)
         idx = 0
         while setupapi.SetupDiEnumDeviceInterfaces(
             dev_info, None, byref(guid), idx, byref(interface_data)
