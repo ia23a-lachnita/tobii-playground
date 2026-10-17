@@ -22,7 +22,7 @@ set LOG=C:\ProgramData\Tobii\Tobii Platform Runtime\IS5LEYETRACKER5\pr_log0.txt
 
 echo === Verifying patched bytes at 0x43e34c of %SRC%
 findstr /c:"0x314" /m nul >nul 2>&1
-python -c "d=open(r'%SRC%','rb').read(); b=d[0x43e34c:0x43e351]; print('PATCH OK:', b); exit(0 if b==b'0x314' else 1)" || (
+python -c "d=open(r'%SRC%','rb').read(); b=d[0xe7b26:0xe7b2e]; print('GATE bytes:', b.hex(' ')); exit(0 if b==bytes.fromhex('c744242c04211403') else 1)" || (
     echo ABORT: %SRC% is not patched - run patch_pid_314.py first!
     pause
     exit /b 1

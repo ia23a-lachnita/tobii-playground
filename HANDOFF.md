@@ -151,3 +151,33 @@ Two strategy branches (both evaluated, decision pending — see Next Steps):
   * Ghidra 12.1.4 download started (background) to C:\Users\xursc\tools\ghidra;
     JDK 21 Corretto already installed (JAVA_HOME set).
   * Hermes skill tobii-5l-re created (project rules + protocol facts).
+
+## Ghidra pass 2026-10-17 (rea MCP, engine 12.1.4) — gate chain proven
+
+Full chain recovered by decompilation (binaries stay gitignored; evidence in repo scripts):
+
+- `platmod_start` (FUN_14025f600) receives the platmod config: count at +8,
+  serial pattern ptr at +0x38, list at +0x44 = N x {uint16 vid @+0, uint16 pid @+2}.
+  It loops N entries requiring ALL identical VIDs ("Wrong VID:PID list. Different
+  VIDs are not supported"), logs `Target Serial pattern: '%s'` (src
+  platform_module_castor.cpp:381) and `Target PID [%u/%u]: (0x%04X)` (src:385)
+  per entry, then starts the usb_manager thread (usb_manager.cpp:573 events).
+- Defaults come from the service config-struct builder FUN_1400e86d0:
+  `MOV dword [RSP+0x2c], 0x03132104` (file 0xE7B26, imm32 @0xE7B2A,
+  {VID 0x2104, PID 0x0313}), count=1 (`MOV dword [RSP+0x28], 1`), copied to
+  instance+0xc (vid@+0x44 after +0x38 shift). UNIQUE occurrence in the file.
+- Config-file route DEAD in this 5L binary: the loader FUN_14026e730 is a 5-byte
+  stub `MOV EAX,0x3; RET` → always fails → "Platmod runtime configuration not
+  set" always logged, values come from compiled defaults only. The
+  `target_serial_pattern` ini key does not exist in the binary (0 hits,
+  both encodings) - pr_config.ini is INERT for this service.
+- Log string `0x313`→`0x314` @0x43e34c is cosmetic (startup log concatenation
+  in main, no functional effect).
+
+Patches applied to repo copy of platform_runtime_service.exe (bin/SHA on request):
+1. gate byte file 0xE7B2C: 0x13→0x14 → compiled list = {VID 0x2104, PID 0x0314}
+   (script patch_pid_list.py, backup .bak_gate313, unique-signature verified)
+2. log string 0x313→0x314 @0x43e34c (script patch_pid_314.py, backup .bak_pid313)
+Deploy = deploy_pid_patch.bat (admin) — verifies gate bytes c744242c04211403,
+stops/copies/starts TobiiPlatformRuntime, tails pr_log0.txt. Expect after
+deploy: `with pids: (0x314)`, `Target PID [0/1]: (0x0314)`, then device-created.
