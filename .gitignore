@@ -12,3 +12,4 @@ obj/
 *.bin
 __pycache__/
 *.bak_pid313
+*.bak_gate313
