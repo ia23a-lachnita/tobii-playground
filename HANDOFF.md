@@ -181,3 +181,42 @@ Patches applied to repo copy of platform_runtime_service.exe (bin/SHA on request
 Deploy = deploy_pid_patch.bat (admin) — verifies gate bytes c744242c04211403,
 stops/copies/starts TobiiPlatformRuntime, tails pr_log0.txt. Expect after
 deploy: `with pids: (0x314)`, `Target PID [0/1]: (0x0314)`, then device-created.
+
+## LIVE DEPLOY + MILESTONE 2026-10-17 (PID gate defeated)
+
+- deploy_pid_patch.bat worked after my two fixes:
+  (1) the first run died silently after the verify step — LF-only line endings,
+  cmd.exe mis-parses LF batch files around if/parens. Fixed with CRLF + labels.
+  (2) after the CRLF fix the script still exited right after the python verify
+  line inside a real cmd console; the wrapper is unreliable so the deployment
+  was done as 5 plain commands instead (net stop / backup copy / patched copy /
+  net start / log tail) — no python, no control flow. Commands verbatim in
+  project chat history.
+- Service start type was DISABLED (from an earlier session that disabled it to
+  free USB for direct TTP apps); set back to AUTO (sc config start= auto).
+- LIVE RESULT — patched service started and the whole chain passed:
+    "Starting IS5LEYETRACKER5 platform runtime with pids: (0x314),
+     version: 1.37.4.0_f2b4e724c9"
+    "Creating new device (device_id : 'IS510-100211404854')" (device_create)
+    "Server created" / "Server listening for incoming connections"
+  No "Wrong VID:PID list", no PID rejection. THE PID GATE IS DEFEATED LIVE.
+
+## NEW WALL FOUND: firmware-version mismatch -> forced upgrade loop
+
+- On bring-up: "Embedded version: 02a1a6a977, device version: 3.15.0-a36e7bc7"
+- FUN_1402d2f30 (castor t2srv instance create) strcmps the platform's expected
+  fw string vs the device-reported version. Equal -> normal create path.
+  Different -> TTP opcode 0x31041 (FUN_1403b4640) -> "FW upgrade device mode
+  init done" -> "Uploading new firmware to device tobii-usbttp://NN" ->
+  5L rejects ET5 image ("Wrong manifest state 10 status 67") -> mode 4 ->
+  re-added / re-plug loops; device stays flagged `fw_upgrading : true`.
+- Ghost (TobiiGhost.exe, %LOCALAPPDATA%\TobiiGhost) connected on this state:
+  command+subscription client created, "finished handshake, connection now
+  valid", then dropped 14 ms later ("queued for destruction" /
+  "Unknown client disconnected"). Consistent with refusing an fw_upgrading device.
+- PATCH 3 (patch_fwcheck.py): 85 C9 74 47 -> EB 49 74 47 @ file 0x2D2465
+  (VA 0x1402d3065 TEST ECX,ECX -> JMP 0x1402d30b0): normal create path is now
+  unconditional — device fw accepted as-is, no upgrade trigger. Backup
+  .bak_fwcheck. Applied to repo copy, awaiting admin deploy.
+- Repo copy now carries THREE patches (imm gate 0xE7B2C, log string 0x43e34c,
+  fw-check 0x2D2465). Installed copy carries patches 1+2 only.
