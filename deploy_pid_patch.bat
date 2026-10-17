@@ -1,50 +1,65 @@
 @echo off
-REM ==========================================================================
-REM deploy_pid_patch.bat - ADMIN REQUIRED (run as Administrator)
-REM
-REM Deploys the PID-gate patch (0x313 -> 0x314) to the installed Tobii
-REM Platform Runtime service and restarts it. Evidence basis:
-REM   pr_log0.txt: 'Starting ... with pids: (0x313)' / 'Target PID [0/1]:
-REM   (0x0313)' - the service accepts ONLY ET5's PID 0x0313; our 5L is
-REM   0x0314 and is rejected at the usb_manager match step.
-REM   patch_pid_314.py already patched this repo copy (0x43e34c).
-REM
-REM Expectation after deploy: pr_log0.txt shows 'pids: (0x314)' and
-REM   'Target PID [0/1]: (0x0314)'; device events should create a device
-REM   (device_create lines / functional clients).
-REM Rollback: restore .bak_pid313 over both copies and restart.
-REM ==========================================================================
-
 setlocal
 set SRC=C:\Users\xursc\projects\tobii_playground\platform_runtime_service.exe
 set DST=C:\Program Files\Tobii\Platform Runtime\platform_runtime_IS5LEYETRACKER5_service.exe
-set LOG=C:\ProgramData\Tobii\Tobii Platform Runtime\IS5LEYETRACKER5\pr_log0.txt
+set LOGDIR=C:\ProgramData\Tobii\Tobii Platform Runtime\IS5LEYETRACKER5
 
-echo === Verifying patched bytes at 0x43e34c of %SRC%
-findstr /c:"0x314" /m nul >nul 2>&1
-python -c "d=open(r'%SRC%','rb').read(); b=d[0xe7b26:0xe7b2e]; print('GATE bytes:', b.hex(' ')); exit(0 if b==bytes.fromhex('c744242c04211403') else 1)" || (
-    echo ABORT: %SRC% is not patched - run patch_pid_314.py first!
-    pause
-    exit /b 1
-)
+echo === Admin check ===
+net session >nul 2>&1
+if errorlevel 1 goto NOTADMIN
+echo OK - running elevated
 
-echo === Stopping service
-net stop "TobiiPlatformRuntime" 2>nul
+echo === Verify patched gate bytes in repo copy (0xE7B26) ===
+python -c "import sys; d=open(r'%SRC%','rb').read(); b=d[0xE7B26:0xE7B2E]; print('GATE bytes:', b.hex(' ')); sys.exit(0 if b==bytes.fromhex('c744242c04211403') else 1)"
+if errorlevel 1 goto BADREPO
 
-echo === Backing up installed binary
-if not exist "%DST%.orig" copy /Y "%DST%" "%DST%.orig" >nul
+echo === Stopping service ===
+net stop TobiiPlatformRuntime
 
-echo === Copying patched binary
-copy /Y "%SRC%" "%DST%"
+echo === Backing up installed binary ===
+for /f %%t in ('powershell -NoProfile -Command "Get-Date -Format yyyyMMdd-HHmmss"') do set TS=%%t
+copy /y "%DST%" "%DST%.bak_%TS%" || echo WARN: no backup (installed copy maybe already replaced)
 
-echo === Starting service
-net start "TobiiPlatformRuntime" 2>nul
+echo === Copying patched binary ===
+copy /y "%SRC%" "%DST%"
+if errorlevel 1 goto COPYFAIL
+python -c "import sys; d=open(r'%DST%','rb').read(); b=d[0xE7B26:0xE7B2E]; print('INSTALLED GATE bytes:', b.hex(' ')); sys.exit(0 if b==bytes.fromhex('c744242c04211403') else 1)"
+if errorlevel 1 goto BADINST
 
-echo === Service state
-sc query TobiiPlatformRuntime | findstr STATE
+echo === Starting service ===
+net start TobiiPlatformRuntime
+sc query TobiiPlatformRuntime
 
-echo === Recent log lines
-powershell -NoProfile -Command "Get-Content '%LOG%' -Tail 12"
+echo === Deployed OK. Replug USB, then tail log ===
+echo === Recent log lines ===
+powershell -NoProfile -Command "Get-Content -Tail 15 '%LOGDIR%\pr_log0.txt'"
+exit /b 0
 
-echo === Done. Device still plugged in? Watch for device-created lines.
+:NOTADMIN
+echo ============================================
+echo NOT ELEVATED. Right-click cmd - Run as administrator, then:
+echo   C:\Users\xursc\projects\tobii_playground\deploy_pid_patch.bat
+echo ============================================
 pause
+exit /b 1
+
+:BADREPO
+echo ============================================
+echo ABORT - repo copy is NOT patched. Run patch_pid_list.py first.
+echo ============================================
+pause
+exit /b 1
+
+:COPYFAIL
+echo ============================================
+echo ABORT - copy to Program Files failed.
+echo ============================================
+pause
+exit /b 1
+
+:BADINST
+echo ============================================
+echo ABORT - installed bytes wrong after copy. Restore backup manually.
+echo ============================================
+pause
+exit /b 1
