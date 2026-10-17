@@ -288,3 +288,28 @@ WinUSB with op 0x546 (+0x547), dump the raw response. Ground truth: the exact
 stream-id encoding the 5L returns (small ints? 16-bit 0x0500-style?) tells us
 whether the fix belongs in the parse (16-bit id handling) or in the dispatch
 table. Script written, verified with python -c compile; ready to run.
+
+## probe_caps.py debugging pass 2026-10-18 — discovery now proven
+
+Local API-level debugging (service can stay running — only CreateFile needs it
+stopped). Fixed bugs found this pass:
+1. Missing argtypes/restypes: without them ctypes truncates every HANDLE to
+   32 bits on x64; SetupDiGetClassDevsW's return was truncated and every
+   SetupAPI call silently failed → "0 interfaces scanned". All setupapi/
+   kernel32/winusb functions now carry explicit restype + argtypes.
+2. SetupDiEnumDeviceInterfaces takes FIVE args (set, DeviceInfoData=NULL,
+   guid, memberindex, out-data) — the None slot is mandatory; a 4-arg call
+   never fills the out struct.
+3. SP_DEVICE_INTERFACE_DATA cbSize must be 32 on x64 (DWORD+GUID+DWORD+PTR);
+   writing 40 makes the API reject the enum call with ERROR_INVALID_PARAMETER.
+4. SP_DEVICE_INTERFACE_DETAIL_DATA_W layout: path starts at byte 4 (wchar
+   index 2), not byte 8 — slicing at 4 clipped the leading backslash; parse
+   up to the NUL terminator.
+5. CreateFile failure check must accept both -1 and 0xFFFFFFFFFFFFFFFF as
+   INVALID_HANDLE (restype=HANDLE surfaces the unsigned form).
+
+VERIFIED locally with service RUNNING:
+  discovery returns
+  \?\usb#vid_2104&pid_0314&mi_00#7&42101eb&0&0000#{85c0f97c-e2b1-422a-92a9-5f96072e79d8}
+  CreateFile returns ACCESS DENIED (err 5) while the service owns the device
+  → the probe MUST run with the service stopped (already in the run docs).

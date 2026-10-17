@@ -30,7 +30,108 @@ winusb = ctypes.windll.winusb
 kernel32 = ctypes.windll.kernel32
 setupapi = ctypes.windll.setupapi
 
-INVALID_HANDLE_VALUE = wintypes.HANDLE(-1).value
+# --- Struct + signature declarations. WITHOUT explicit restypes/argtypes,
+# --- ctypes marshals HANDLEs as 32-bit ints on x64: SetupDiGetClassDevsW's
+# --- return is truncated, every subsequent SetupAPI call fails silently,
+# --- and enumeration yields nothing. This was the "device not found" bug.
+
+
+class GUID(Structure):
+    _fields_ = [
+        ("Data1", wintypes.DWORD),
+        ("Data2", wintypes.WORD),
+        ("Data3", wintypes.WORD),
+        ("Data4", ctypes.c_byte * 8),
+    ]
+
+
+class SP_DEVICE_INTERFACE_DATA(Structure):
+    _fields_ = [
+        ("cbSize", wintypes.DWORD),
+        ("InterfaceClassGuid", GUID),
+        ("Flags", wintypes.DWORD),
+        ("Reserved", POINTER(ctypes.c_ulong)),
+    ]
+
+
+class OVERLAPPED(Structure):
+    _fields_ = [
+        ("Internal", POINTER(ctypes.c_ulong)),
+        ("InternalHigh", POINTER(ctypes.c_ulong)),
+        ("Offset", wintypes.DWORD),
+        ("OffsetHigh", wintypes.DWORD),
+        ("hEvent", wintypes.HANDLE),
+    ]
+
+
+setupapi.SetupDiGetClassDevsW.restype = wintypes.HANDLE
+setupapi.SetupDiGetClassDevsW.argtypes = [
+    POINTER(GUID), wintypes.LPCWSTR, wintypes.HWND, wintypes.DWORD,
+]
+# NOTE: SetupDiEnumDeviceInterfaces takes FIVE params:
+# (DeviceInfoSet, DeviceInfoData=NULL, InterfaceClassGuid, MemberIndex,
+#  out DeviceInterfaceData). Dropping the NULL slot breaks the call.
+setupapi.SetupDiEnumDeviceInterfaces.restype = wintypes.BOOL
+setupapi.SetupDiEnumDeviceInterfaces.argtypes = [
+    wintypes.HANDLE, ctypes.c_void_p, POINTER(GUID), wintypes.DWORD,
+    ctypes.c_void_p,
+]
+setupapi.SetupDiGetDeviceInterfaceDetailW.restype = wintypes.BOOL
+setupapi.SetupDiGetDeviceInterfaceDetailW.argtypes = [
+    wintypes.HANDLE, wintypes.LPVOID, wintypes.LPVOID,
+    wintypes.DWORD, POINTER(wintypes.DWORD), wintypes.LPVOID,
+]
+
+# SP_DEVICE_INTERFACE_DATA on x64 = DWORD cbSize + GUID(16) + DWORD Flags +
+# ULONG_PTR Reserved = 32 bytes (verified: ctypes.sizeof == 32, and an
+# enum call with cbSize=32 succeeds — 40 in cbSize makes the API reject
+# the struct with ERROR_INVALID_PARAMETER 87).
+SP_DEVICE_INTERFACE_DATA_SIZE = 32
+
+
+def _make_interface_data():
+    buf = ctypes.create_string_buffer(SP_DEVICE_INTERFACE_DATA_SIZE)
+    ctypes.cast(buf, POINTER(wintypes.DWORD))[0] = SP_DEVICE_INTERFACE_DATA_SIZE
+    return buf
+
+
+setupapi.SetupDiDestroyDeviceInfoList.restype = wintypes.BOOL
+setupapi.SetupDiDestroyDeviceInfoList.argtypes = [wintypes.HANDLE]
+
+kernel32.CreateFileW.restype = wintypes.HANDLE
+kernel32.CreateFileW.argtypes = [
+    wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
+    wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE,
+]
+kernel32.CloseHandle.restype = wintypes.BOOL
+kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+kernel32.CreateEventW.restype = wintypes.HANDLE
+kernel32.CreateEventW.argtypes = [
+    wintypes.LPVOID, wintypes.BOOL, wintypes.BOOL, wintypes.LPCWSTR,
+]
+
+winusb.WinUsb_Initialize.restype = wintypes.BOOL
+winusb.WinUsb_Initialize.argtypes = [wintypes.HANDLE, POINTER(wintypes.HANDLE)]
+winusb.WinUsb_Free.restype = wintypes.BOOL
+winusb.WinUsb_Free.argtypes = [wintypes.HANDLE]
+winusb.WinUsb_WritePipe.restype = wintypes.BOOL
+winusb.WinUsb_WritePipe.argtypes = [
+    wintypes.HANDLE, ctypes.c_ubyte, ctypes.c_void_p, wintypes.ULONG,
+    POINTER(wintypes.ULONG), wintypes.LPVOID,
+]
+winusb.WinUsb_ReadPipe.restype = wintypes.BOOL
+winusb.WinUsb_ReadPipe.argtypes = [
+    wintypes.HANDLE, ctypes.c_ubyte, ctypes.c_void_p, wintypes.ULONG,
+    POINTER(wintypes.ULONG), wintypes.LPVOID,
+]
+winusb.WinUsb_GetOverlappedResult.restype = wintypes.BOOL
+winusb.WinUsb_GetOverlappedResult.argtypes = [
+    wintypes.HANDLE, wintypes.LPVOID, POINTER(wintypes.ULONG), wintypes.BOOL,
+]
+winusb.WinUsb_AbortPipe.restype = wintypes.BOOL
+winusb.WinUsb_AbortPipe.argtypes = [wintypes.HANDLE, ctypes.c_ubyte]
+
+INVALID_HANDLE_VALUE = -1
 ERROR_IO_PENDING = 997
 FILE_SHARE_READ = 0x00000001
 FILE_SHARE_WRITE = 0x00000002
@@ -39,6 +140,8 @@ FILE_ATTRIBUTE_NORMAL = 0x80
 FILE_FLAG_OVERLAPPED = 0x40000000
 DIGCF_PRESENT = 0x00000002
 DIGCF_DEVICEINTERFACE = 0x00000010
+GENERIC_READ = 0x80000000
+GENERIC_WRITE = 0x40000000
 
 EP_BULK_IN = 0x83
 EP_BULK_OUT = 0x05
@@ -47,108 +150,126 @@ TRANSPORT_TYPE_COMMAND = 1
 
 OP_HELLO = 0x3E8
 OP_GET_CAPABILITIES = 0x546
-OP_GET_CAPABILITIES_ALL = 0x547  # guess for the "_all" variant (verify)
+OP_GET_CAPABILITIES_ALL = 0x547  # candidate op for the "_all" variant (verify)
 
 TTP_MAGIC = b"true"
 
 
+def _parse_guid(s):
+    parts = s.strip("{}").split("-")
+    g = GUID()
+    g.Data1 = int(parts[0], 16)
+    g.Data2 = int(parts[1], 16)
+    g.Data3 = int(parts[2], 16)
+    g.Data4 = (ctypes.c_byte * 8)(*bytes.fromhex(parts[3] + parts[4]))
+    return g
+
+
 def find_device():
-    GUID_DEVINTERFACE_USB_DEVICE = "{A5DCBF10-6530-11D2-901F-00C04FB951ED}"
-    guid_str = GUID_DEVINTERFACE_USB_DEVICE.strip("{}")
-    parts = guid_str.split("-")
-
-    class GUID(Structure):
-        _fields_ = [
-            ("Data1", wintypes.DWORD),
-            ("Data2", wintypes.WORD),
-            ("Data3", wintypes.WORD),
-            ("Data4", ctypes.c_byte * 8),
-        ]
-
-    guid = GUID()
-    guid.Data1 = int(parts[0], 16)
-    guid.Data2 = int(parts[1], 16)
-    guid.Data3 = int(parts[2], 16)
-    guid.Data4 = (ctypes.c_byte * 8)(*bytes.fromhex(parts[3] + parts[4]))
-
-    dev_info = setupapi.SetupDiGetClassDevsW(
-        byref(guid), None, None, DIGCF_PRESENT | DIGCF_DEVICEINTERFACE
+    # The device's WinUSB interface GUID (MI_00, verified via earlier
+    # streaming) first, then the generic USB device GUIDs as fallback.
+    GUIDS_TO_TRY = (
+        "{85C0F97C-E2B1-422A-92A9-5F96072E79D8}",
+        "{A5DCBF10-6530-11D2-901F-00C04FB951ED}",
+        "{88BAE032-5A81-49F0-BC3D-A4FF138216D6}",
     )
-    if dev_info == INVALID_HANDLE_VALUE:
-        return None
 
-    class SP_DEVICE_INTERFACE_DATA(Structure):
-        _fields_ = [
-            ("cbSize", wintypes.DWORD),
-            ("InterfaceClassGuid", GUID),
-            ("Flags", wintypes.DWORD),
-            ("Reserved", POINTER(ctypes.c_ulong)),
-        ]
-
-    interface_data = SP_DEVICE_INTERFACE_DATA()
-    interface_data.cbSize = ctypes.sizeof(SP_DEVICE_INTERFACE_DATA)
-
-    idx = 0
-    while setupapi.SetupDiEnumDeviceInterfaces(
-        dev_info, None, byref(guid), idx, byref(interface_data)
-    ):
-        required_size = wintypes.DWORD()
-        setupapi.SetupDiGetDeviceInterfaceDetailW(
-            dev_info, byref(interface_data), None, 0, byref(required_size), None
+    found, seen = None, []
+    for guid_str in GUIDS_TO_TRY:
+        guid = _parse_guid(guid_str)
+        dev_info = setupapi.SetupDiGetClassDevsW(
+            byref(guid), None, None, DIGCF_PRESENT | DIGCF_DEVICEINTERFACE
         )
+        if not dev_info or dev_info == INVALID_HANDLE_VALUE:
+            continue
 
-        class SP_DEVICE_INTERFACE_DETAIL_DATA_W(Structure):
-            _fields_ = [
-                ("cbSize", wintypes.DWORD),
-                ("DevicePath", ctypes.c_wchar * (required_size.value // 2 if required_size.value > 4 else 256)),
-            ]
+        interface_data = _make_interface_data()
 
-        detail_data = SP_DEVICE_INTERFACE_DETAIL_DATA_W()
-        detail_data.cbSize = 8
-
-        if setupapi.SetupDiGetDeviceInterfaceDetailW(
-            dev_info, byref(interface_data), byref(detail_data),
-            required_size, byref(required_size), None
+        idx = 0
+        while setupapi.SetupDiEnumDeviceInterfaces(
+            dev_info, None, byref(guid), idx, byref(interface_data)
         ):
-            path = detail_data.DevicePath
-            low = path.lower()
-            if "vid_2104" in low and ("pid_0314" in low or "pid_0313" in low):
-                setupapi.SetupDiDestroyDeviceInfoList(dev_info)
-                return path
-        idx += 1
+            required_size = wintypes.DWORD()
+            # size query: NULL buffer -> required_size holds needed bytes
+            setupapi.SetupDiGetDeviceInterfaceDetailW(
+                dev_info, byref(interface_data), None, 0,
+                byref(required_size), None,
+            )
+            n = max(required_size.value, 512)
+            buf = ctypes.create_unicode_buffer(n // 2 + 8)
+            # SP_DEVICE_INTERFACE_DETAIL_DATA_W native x64 layout: DWORD cbSize
+            # + 4 bytes padding, then the WCHAR path. Set cbSize = 8.
+            ctypes.cast(buf, POINTER(wintypes.DWORD))[0] = 8
+            ok = setupapi.SetupDiGetDeviceInterfaceDetailW(
+                dev_info, byref(interface_data), buf, n,
+                byref(required_size), None,
+            )
+            if ok:
+                # Layout proven empirically: cbSize DWORD at bytes 0-3, then
+                # the WCHAR path at byte 4 (wchar index 2) — no padding, even
+                # though sizeof(SP_DEVICE_INTERFACE_DETAIL_DATA_W)=8 on x64.
+                # Cut at the NUL terminator.
+                path = buf[2:].split("\x00", 1)[0]
+                if path not in seen:
+                    seen.append(path)
+                low = path.lower()
+                if "vid_2104" in low and ("pid_0314" in low or "pid_0313" in low):
+                    if "winusb" in low or "mi_00" in low or guid_str.startswith("{85C0F97C"):
+                        found = path
+                    elif found is None:
+                        found = path
+            idx += 1
 
-    setupapi.SetupDiDestroyDeviceInfoList(dev_info)
+        setupapi.SetupDiDestroyDeviceInfoList(dev_info)
+
+    if found:
+        print(f"[ok] device interface: {found}")
+        return found
+
+    print(f"[!] no VID_2104 interface path found ({len(seen)} interfaces scanned):")
+    for p in seen[:40]:
+        print(f"    {p}")
     return None
 
 
 class Probe:
     def __init__(self, path):
-        self.handle = INVALID_HANDLE_VALUE
+        self.handle = None
         self.winusb_handle = None
         self.seq = 1
         self.path = path
+        self.events = []
 
     def open(self):
         self.handle = kernel32.CreateFileW(
-            self.path, 0xC0000000, FILE_SHARE_READ | FILE_SHARE_WRITE,
+            self.path, GENERIC_READ | GENERIC_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
             None, OPEN_EXISTING,
             FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED, None,
         )
-        if self.handle == INVALID_HANDLE_VALUE:
-            print(f"[!] CreateFile failed: error {kernel32.GetLastError()}")
+        err = kernel32.GetLastError()
+        # HANDLE restype can surface as -1 or as the raw unsigned 64-bit
+        # INVALID_HANDLE_VALUE (0xFFFFFFFFFFFFFFFF); check both forms.
+        if (not self.handle or self.handle == INVALID_HANDLE_VALUE
+                or self.handle == 0xFFFFFFFFFFFFFFFF):
+            print(f"[!] CreateFile failed: error {err} "
+                  f"(5 = access denied: stop the service first!)")
             return False
-        self.winusb_handle = ctypes.c_void_p()
+        self.winusb_handle = wintypes.HANDLE()
         if not winusb.WinUsb_Initialize(self.handle, byref(self.winusb_handle)):
             print(f"[!] WinUsb_Initialize failed: error {kernel32.GetLastError()}")
             return False
-        print(f"[ok] opened {self.path}")
+        print("[ok] WinUSB interface open")
         return True
 
     def close(self):
         if self.winusb_handle:
             winusb.WinUsb_Free(self.winusb_handle)
-        if self.handle != INVALID_HANDLE_VALUE:
+        if self.handle:
             kernel32.CloseHandle(self.handle)
+        for ev in self.events:
+            kernel32.CloseHandle(ev)
+        self.events.clear()
 
     def send(self, opcode, data=b""):
         """TTP request: 16-byte BE header (op, seq, status, object) + data,
@@ -198,16 +319,9 @@ class Probe:
         return buf.raw[: read.value]
 
     def _new_overlapped(self):
-        class OV(Structure):
-            _fields_ = [
-                ("Internal", POINTER(ctypes.c_ulong)),
-                ("InternalHigh", POINTER(ctypes.c_ulong)),
-                ("Offset", wintypes.DWORD),
-                ("OffsetHigh", wintypes.DWORD),
-                ("hEvent", wintypes.HANDLE),
-            ]
-        o = OV()
+        o = OVERLAPPED()
         o.hEvent = kernel32.CreateEventW(None, True, False, None)
+        self.events.append(o.hEvent)
         return o
 
 
