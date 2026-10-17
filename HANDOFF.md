@@ -386,3 +386,26 @@ dumps the raw device-info answer. Run block (admin cmd, repo root):
     net stop TobiiPlatformRuntime
     set PYTHONHOME=&& set UV_INTERNAL__PYTHONHOME=&& python probe_info.py
     net start TobiiPlatformRuntime
+
+## ae34 patch PREPARED 2026-10-18 — awaiting probe confirmation (commit fdefcf8+)
+
+Full chain proven at instruction level (setup_device_info assembly):
+- op 0x354 device-info -> if (info+0x78)==0 the whole setup hard-fails
+  ("Could not get integration type", not in live log) -> device reports it
+- strncpy(ctx+0xaa34, info, 0xff)
+- 0x140264113: MOV EDI, 1                        ; default HMD-class
+- 4-byte exact compare ctx[0..3] vs "HMD\0"     ; DAT_140469660 = "HMD\0"
+- 0x14026427d: JMP 0x14026429a  = EB 1B @ file 0x26367D (sig 75E3EB1B488D15, unique hit)
+- else strcmp(ctx, "Internal_display") == 0 ? 2 : 0
+- 0x14026429a: MOV [ctx+0xae34], EDI             ; the gate value
+Ghost side: stream_type_receiver appends gaze entry only when !(a5b0==1 && ae34==1)
+
+patch_ae34_hmd.py (dry-run verified): NOP EB 1B -> 90 90 so "HMD" falls into
+the strcmp path -> ae34=0 -> gaze entry appended. Antigravity second opinion:
+minimal + safe; ae34=0 is precisely the desktop flat-display path (DisplayArea,
+desktop calibration, 2D GazePoint) that this 5L tracker needs; the only loss is
+HMD-relative 3D streams, which neither this 5L-only build nor Ghost uses.
+
+DECISION GATE: deploy only after probe_info.py shows the 5L answers op 0x354
+with integration type "HMD". If it answers something else, ae34 is already 0
+and the suppression cause is re-opened.
