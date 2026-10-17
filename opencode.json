@@ -9,6 +9,20 @@
       ],
       "enabled": true,
       "timeout": 30000
+    },
+    "rea": {
+      "type": "local",
+      "command": [
+        "cmd.exe",
+        "/d",
+        "/c",
+        "npx",
+        "-y",
+        "rea-agents@6.5.0",
+        "mcp"
+      ],
+      "enabled": true,
+      "timeout": 30000
     }
   }
 }
