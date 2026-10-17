@@ -353,3 +353,36 @@ yet Ghost refuses. Remaining suspects, in order:
      "Could not get ...") used for model classification.
 Next: RE TobiiGhost.dll (managed) for that string -> identify the checked
 capability -> patch the service's caps relay for exactly that entry.
+
+## Ghost eyetracking-wall ROOT CAUSE chain 2026-10-18 — ae34 gate proven
+
+Ghost's "We only discovered devices that doesn't support eyetracking" traces to
+the capabilities the SERVICE announces, not to Ghost itself:
+
+stream_type_receiver (FUN_140264c90) appends the gaze capability entry
+{type 3, 0x10, 0x11, present=1} at ctx+0xd8 (array base ctx+0x18f0, stride
+0x88, count ctx+0xa0f0) from BOTH stream id 1 and stream id 5 handlers — but
+ONLY when !(ctx+0xa5b0 == 1 && ctx+0xae34 == 1).
+
+setup_device_info (FUN_1402640d0) computes ctx+0xae34 from the device-info TTP
+response to op 0x354:
+
+    uVar5 = 1;                                // DEFAULT = HMD-class
+    if (info+0x78 != 0) {                     // integration-type string present
+        uVar5 = strncmp(info, "HMD", 4) == 0  ? 1   // DAT_140469660 = "HMD"
+             : strcmp(info, "Internal_display") == 0 ? 2
+             : 0;
+    }
+    *(ctx+0xae34) = uVar5;                    // absent/errored field stays 1
+
+Live log: a5b0 == 1 (device-info present). If the 5L's integration type either
+starts with "HMD" or fails the +0x78 presence flag, ae34 == 1 -> gaze entry
+skipped -> Ghost reports the device as eyetracking-incapable. That is the only
+remaining hypothesis and it is decidable with one device query.
+
+probe_info.py (new): replays op 0x354 over the proven probe_caps2.py transport,
+dumps the raw device-info answer. Run block (admin cmd, repo root):
+
+    net stop TobiiPlatformRuntime
+    set PYTHONHOME=&& set UV_INTERNAL__PYTHONHOME=&& python probe_info.py
+    net start TobiiPlatformRuntime
