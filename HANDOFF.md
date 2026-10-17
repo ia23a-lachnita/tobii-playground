@@ -313,3 +313,43 @@ VERIFIED locally with service RUNNING:
   \?\usb#vid_2104&pid_0314&mi_00#7&42101eb&0&0000#{85c0f97c-e2b1-422a-92a9-5f96072e79d8}
   CreateFile returns ACCESS DENIED (err 5) while the service owns the device
   → the probe MUST run with the service stopped (already in the run docs).
+
+## GROUND TRUTH 2026-10-18 — 5L capability list captured (probe_caps2.py)
+
+probe_caps2.py (protocol-corrected v2) WORKED with the service stopped:
+- Session open = vendor ctrl 0x41/0x41 (missing in v1 — device discarded frames).
+- 24-byte TTP header, byte-exact vs TobiiGazeDemo/Program.cs.
+- HELLO 0x3e8 -> RSP payload [00 00][02 size4 00 01 00 08] = stream count 8?? (demo list).
+- QUERY_REALM 0x640 -> RSP ok.
+- GET_CAPABILITIES op 0x546 (both payload variants, identical response, 427B):
+
+  Wire grammar (decoded from the hexdump): [00 00] prefix, header
+  [05|size=4|tag 0x000e0100][02|size=4|0x2710], then repeating units
+  [05|size=4|tag 0x00022710][02|size=4|ID][14|size|strlen|"true"/"false"].
+  Inner u32 of the 0x14 TLV = strlen (4 for "true", 5 for "false").
+
+  0x546 STREAM CAPS — the 5L reports 13 stream ids 0..12 (SMALL ints on the
+  wire, NOT 16-bit 0x0500-style — antigravity's unpack-truncation hypothesis
+  is disproven):
+    id:  0     1     2     3      4      5     6     7     8     9      10     11     12
+    val: true  true  true  false  false  true  true  true  true  true   false  true   false
+  - id 5 = gaze = TRUE (device DOES claim eyetracking capability).
+  - id 0 = TRUE and is the only id unmapped in stream_type_receiver's
+    dispatch table (logs "Found unmapped stream 0"; path only logs).
+  - id 3 = FALSE. Service RE note: the stream-5 handler appends capability
+    entry 3 (gaze) to the served array — entry index 3 correlates with this
+    device-reported false. Prime suspect for Ghost's "doesn't support
+    eyetracking" verdict.
+- op 0x547 (caps_all / feature ids): all true, ids 0x3ec-0x3fc (1004-1020;
+  service walks feature ids 1000..1034).
+
+CONCLUSION: the 5L itself answers the capability query with gaze=true(id5),
+yet Ghost refuses. Remaining suspects, in order:
+  1. Ghost's managed filter (TobiiGhost.dll) keys on a specific caps entry —
+     decompile it and read the exact check behind
+     "We only discovered devices that doesn't support eyetracking."
+  2. The 5 identity fields the 5L cannot report (sub platform type, lot id,
+     integration id, calibration version, calibration date — live log
+     "Could not get ...") used for model classification.
+Next: RE TobiiGhost.dll (managed) for that string -> identify the checked
+capability -> patch the service's caps relay for exactly that entry.
