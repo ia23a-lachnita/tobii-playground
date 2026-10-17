@@ -89,20 +89,35 @@ Two strategy branches (both evaluated, decision pending — see Next Steps):
 
 ## Next steps (ranked)
 
-1. With rea, inventory the identity surface of the host stack:
-   `platform_runtime_service.exe` (in repo, 20MB), `TobiiGhost` app files,
-   `middleware_client.dll`, `tobii_stream_engine.dll`(+ portal), Game Hub.
-   Search strings for `0313`/`0314`, `IS50F`, `IS510`, `IS5`, model names;
-   find where PID/serial gates the device bring-up; map the EyeChip
-   device-info response path. Decide branch A vs B on evidence.
-2. If branch A: extend patch_binary.py to the full gate set the analysis finds.
-3. If branch B: evaluate USBIP/virtual-USB driver options on Windows; check
-   whether the service accepts a device whose *strings* say ET5 while PID
-   stays 0314 (string-only gate would be patch-free on the USB side).
-4. Install Ghidra 12.1.4 + JDK 21 for deep PE analysis when a target needs
-   decompilation (go/no-go with user — local download only).
-5. Fix the V-key bug; then re-run full calibration + validation for a clean
-   baseline before any spoof experiments.
+0. **CONFIRMED GATE (2026-10-17):** the service's compiled PID list holds
+   exactly one entry — ET5's 0x0313 (runtime log: `Target PID [0/1]:
+   (0x0313)`, `Starting ... with pids: (0x313)`). Our device is 0x0314 →
+   rejected at the usb_manager match step (events handled, device never
+   created). Serial gate also present (`Target Serial pattern`), config key
+   `target_serial_pattern` exists in pr_config.ini (= `IS510*|IS50F*|IS5FF*`,
+   written Jul 24 17:56, never exercised — service was stopped the same
+   minute). Repo copy of the service binary is patched 0x313→0x314
+   (same-length string, offset 0x43e34c, backup `.bak_pid313`).
+1. **USER-GATED (admin):** deploy the patched exe to
+   `C:\Program Files\Tobii\Platform Runtime\platform_runtime_IS5LEYETRACKER5_service.exe`,
+   restart service, watch pr_log0.txt for `pids: (0x314)` /
+   `Target PID [0/1]: (0x0314)` and a device-created line; then launch
+   Ghost / Game Hub and check device visibility.
+2. Ghidra pass on the service binary: xref `Wrong VID:PID list. Different
+   VIDs are not supported` (0x466c60) → the VID:PID list may be CONFIG-able
+   (single VID only) — find the config key; xref `0x313` (0x43e34c) →
+   confirm the string feeds the match list (not just the log); xref
+   `Target Serial pattern` (0x466ca8) → matching semantics (fnmatch `IS5*`
+   vs exact vs registry string). Ghidra 12.1.4 download started to
+   `C:\Users\xursc\tools\ghidra`; JDK 21 (Corretto, JAVA_HOME set) present.
+3. If the VID:PID list is config-able, prefer pr_config.ini over binary
+   patch (no signature breakage).
+4. License wall: licenseKey JSON schema found in utf16 strings
+   (serialNumbers, platformTypes, models, dateValid, featureGroup,
+   featureLocks, licenseKey, --SE-SIGNATURE--) at 0x442b90.. — map the
+   verify path before promising Ghost features.
+5. Fix the V-key bug; then re-run full calibration + validation for a
+   clean baseline before further spoof experiments.
 
 ## Changelog
 
@@ -110,3 +125,29 @@ Two strategy branches (both evaluated, decision pending — see Next Steps):
   made to avoid collision with active headset_range_extension install.
   Created HANDOFF.md + rea entry in opencode.json. Full project history
   recovered from OpenCode DB (7 sessions, 2026-07-21 → 2026-09-06).
+- 2026-10-17 Hermes RE sweep (byte-level evidence, see "Next steps" #0):
+  * Live PnP: `USB\VID_2104&PID_0314\IS510-100211404854` → device serial
+    IS510-100211404854 (previous notes said ...05834 — wrong, memory fixed).
+  * Runtime log pr_log0.txt: service starts `with pids: (0x313)`,
+    `Target Serial pattern: 'IS5*'` (patched), `Target PID [0/1]: (0x0313)`
+    — ONE compiled PID entry, ET5 only; usb_manager logs "Handling device
+    event" on every plug/unplug but the device is never created → match
+    gate rejects 0x0314 at platmod (usb_manager.cpp:573 event, no
+    device_create/device_open lines).
+  * pr_config.ini exists (`[platform] target_serial_pattern = IS510*|IS50F*|IS5FF*`,
+    mtime 2026-07-24 17:56, never exercised — service stopped same minute).
+  * Static strings in platform_runtime_service.exe: `Target Serial pattern:
+    '%s'` (0x466ca8), `Target PID [%u/%u]: (0x%04X)` (0x466cc8),
+    `Wrong VID:PID list. Different VIDs are not supported` (0x466c60) →
+    VID:PID list looks CONFIG-able (single VID); default pid string `0x313`
+    @0x43e34c; device URI `tobii-usbttp://%u` (0x466a50); licenseKey JSON
+    schema utf16 @0x442b90 (serialNumbers/platformTypes/models/dateValid/
+    featureGroup/featureLocks/licenseKey/--SE-SIGNATURE--); device codenames
+    IS5_DEVICE_CASTOR_EVAL / RUFIO_E_P0 @0x12af63b; platmod source paths
+    platform_modules/castor/src/standard/platform_module_castor.cpp:381/385.
+  * Repo scripts added: scan_identity.py, extract_regions.py, patch_pid_314.py.
+  * Repo binary patched (deploy = admin/user-gated): `0x313`→`0x314`
+    length-preserving @0x43e34c; backup platform_runtime_service.exe.bak_pid313.
+  * Ghidra 12.1.4 download started (background) to C:\Users\xursc\tools\ghidra;
+    JDK 21 Corretto already installed (JAVA_HOME set).
+  * Hermes skill tobii-5l-re created (project rules + protocol facts).
