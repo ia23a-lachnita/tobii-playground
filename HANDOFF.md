@@ -443,3 +443,26 @@ bare ==1 comparison:
   - (a5b0 == 1) && (ae34 == 1)  -> pick stream enum 0x1e vs 0x13  [stream 9]
 No other consumer; no arithmetic on the value. NOPing EB 1B -> 90 90 only moves
 the HMD string from the 1-bucket to the 0-bucket. Nothing else can shift.
+
+## READY-TO-PASTE DEPLOY BLOCK (if probe_info shows integration type "HMD")
+
+Step 1 — patch the repo copy (agent side, run by agent in git-bash):
+
+    cd /c/Users/xursc/projects/tobii_playground
+    unset PYTHONHOME UV_INTERNAL__PYTHONHOME
+    python patch_ae34_hmd.py            # EB 1B -> 90 90 @0x26367D, backup .bak_hmd313
+
+Step 2 — deploy (user side, ELEVATED cmd, standalone lines, no wrapper):
+
+    net stop TobiiPlatformRuntime
+    copy /y "C:\Program Files\Tobii\Platform Runtime\platform_runtime_service.exe" C:\Users\xursc\projects\tobii_playground\platform_runtime_service.exe.installed_backup2
+    copy /y "C:\Users\xursc\projects\tobii_playground\platform_runtime_service.exe" "C:\Program Files\Tobii\Platform Runtime\platform_runtime_service.exe"
+    net start TobiiPlatformRuntime
+
+Step 3 — unplug/replug the 5L USB, relaunch Ghost, check pr_log0.txt: device
+re-created, no "Updating..." noise, Ghost lists the tracker (no "doesn't support
+eyetracking"). Agent verifies installed bytes 90 90 48 8d 15 at 0x26367D from
+the unelevated shell.
+
+Rollback: copy platform_runtime_service.exe.installed_backup back over the
+installed file (net stop/start around it).
