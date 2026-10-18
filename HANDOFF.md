@@ -500,3 +500,51 @@ Deploy (user, elevated cmd, standalone lines):
 Then unplug/replug the 5L, relaunch Ghost. PASS = Ghost lists the tracker
 instead of "doesn't support eyetracking". Agent verifies installed bytes
 90 90 48 8d 15 at 0x26367D from the shell afterwards.
+
+## 2026-10-18 — ROOT-CAUSE NARROWED: Ghost's refusal is client-side (Gaming SDK), service+device are healthy
+
+Live experiment (Tobii Pro Eye Tracker Manager v2.7.4, installed on this machine,
+launched with the 5L connected and patched service running) proves the served
+device is healthy:
+
+  - ETM's sdk-js-binding log: "[tobii-prp://IS510-100211404854] licenseFilePath",
+    "research_apply_licenses status 0", "License applied!", "::INIT DEVICE.
+    INIT COMPLETE!", "SDK DeviceCache:: Got Notification callback on:
+    IS510-100211404854" (x3), ":EyeTracking component loaded" (x2).
+  - Service log: ETM became PRP "Client 4" and successfully subscribed to
+    PRP_PROPERTY_ENUM_ADVANCED_GAZE_OUTPUT_FREQUENCY / TRACK_BOX_COMBINED_GAZE /
+    ENABLED_EYE / FAULTS / WARNINGS — all "Client 4 successfully subscribed".
+
+Conclusion: Ghost's "We only discovered devices that doesn't support eyetracking"
+is a decision made INSIDE Ghost's own stack, not by the platform runtime. Ghost
+uses Tobii.Gaming.Tracking.Net.dll (Tobii Gaming SDK, ~56KB .NET, strings scanned).
+Its capability model (from the DLL's string heap):
+
+  - support checks: tobii_capability_supported / tobii_stream_supported /
+    IsStreamSupported
+  - identity fields it reads: integration_id, lot_id, pid, fmt_id,
+    GetCalibrationId, GetDisplayId
+  - enumeration: enumerate_local_device_urls_ex_internal (tobii://... urls)
+
+The service serves the device but leaves 5 identity fields EMPTY (logged 5x
+"Could not get ... for device IS510-100211404854"): sub platform type, lot id,
+integration id, calibration version, calibration date. setup_device_info copies
+each only when the fetched struct's "present" flag == 1 (strncpy 0x7f branches,
+log sites at 0x1402643cc..0x1402643d3 region). The Pro SDK does not require them;
+the Gaming SDK does -> its tracker is filtered as "not eyetracking-capable".
+
+DEAD ENDS confirmed this session:
+  - device-info vtable: FUN_1402b3200 (00 32 2b 14 ...) and FUN_1402d13c0
+    (c0 13 2d 14 ...) searched as 8-byte pointers — ZERO static hits; no vtable
+    to walk to the real fetch op. 0x354 stays a struct size, not an op.
+  - legacy streaming pipe (TOBII-IS510-...): full handshake mapped
+    ([u32 mode][ascii client pipe name], mode 1=streaming, service dials back),
+    our client connected as streaming client 3/4 (USB client ID 102/103), frames
+    forwarded via FUN_1403ad530 -> FUN_1402d1500 (async queue), but no replies
+    without the subscription frame grammar — not the fastest path.
+  - PRP pipe reads DACL-denied for our token (write-only) -> cannot sniff caps.
+
+NEXT LEVER (service-side, our controlled exe): force the five identity
+copy-branches in setup_device_info to always fill (defaults/whatever bytes are
+present), so the Gaming SDK sees complete identity. Requires antigravity
+second opinion before implementation (project rule).
