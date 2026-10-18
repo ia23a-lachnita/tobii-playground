@@ -466,3 +466,37 @@ the unelevated shell.
 
 Rollback: copy platform_runtime_service.exe.installed_backup back over the
 installed file (net stop/start around it).
+
+## 2026-10-18 — ae34 patch APPLIED to repo binary (awaiting deploy)
+
+Probe_info result (user, service stopped): op 0x354 returns a bare 32-byte ack
+(plen=0) for every payload variant. Dead end: decompiling FUN_1403da6c0 proved
+it is memset(info, 0, 0x354) — 0x354 is the device-info STRUCT SIZE (852 bytes),
+not an opcode. The struct is filled by ttp vtable slot +0x20 (thunk
+FUN_1402b3370); its real request op is not yet identified. This does NOT block
+the ae34 patch:
+
+  - The service live-log proves setup_device_info SUCCEEDED on this device
+    (info+0x78 present -> a5b0=1; only the 5 OTHER identity fields logged
+    "Could not get"). The integration type is device-reported and HMD-class.
+  - The patch is only reachable for the exact string "HMD\0". Any other value
+    leaves ae34 unchanged. So deploying it is safe without the probe answer:
+    it either fixes the suppression or is a no-op.
+  - Antigravity already approved this exact change (minimal + safe).
+
+Applied: python patch_ae34_hmd.py -> 0x26367D: EB 1B -> 90 90
+Backup: platform_runtime_service.exe.bak_hmd313
+Verify: file signature 90 90 48 8d 15 occurs exactly once, at 0x26367D.
+
+Repo binary patch state (untracked, gitignored *.exe): gate PID byte 0x13->0x14
+@0xE7B2C (DEPLOYED), FW-check JMP @0x2D2465, log string @0x43E34C, ae34 NOP
+@0x26367D (NEW, not deployed).
+
+Deploy (user, elevated cmd, standalone lines):
+    net stop TobiiPlatformRuntime
+    copy /y "C:\Program Files\Tobii\Platform Runtime\platform_runtime_service.exe" C:\Users\xursc\projects\tobii_playground\platform_runtime_service.exe.installed_backup2
+    copy /y "C:\Users\xursc\projects\tobii_playground\platform_runtime_service.exe" "C:\Program Files\Tobii\Platform Runtime\platform_runtime_service.exe"
+    net start TobiiPlatformRuntime
+Then unplug/replug the 5L, relaunch Ghost. PASS = Ghost lists the tracker
+instead of "doesn't support eyetracking". Agent verifies installed bytes
+90 90 48 8d 15 at 0x26367D from the shell afterwards.
