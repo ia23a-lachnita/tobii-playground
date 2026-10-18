@@ -409,3 +409,37 @@ HMD-relative 3D streams, which neither this 5L-only build nor Ghost uses.
 DECISION GATE: deploy only after probe_info.py shows the 5L answers op 0x354
 with integration type "HMD". If it answers something else, ae34 is already 0
 and the suppression cause is re-opened.
+
+## Assembly-level confirmation + one string mislabel corrected 2026-10-18
+
+on_connected (FUN_140261440, body 0x140261440..0x140261a6c) full assembly read;
+bring-up order confirmed instruction-by-instruction:
+
+  1. 0x140261474 CALL setup_device_info (FUN_1402640d0)   ; a5b0/ae34/identity
+  2. 0x140261493 CALL FUN_1402b3270(ctx, ctx+0xa4f8)      ; tracker capabilities
+       fail -> log (line 0xfa) -> return 7 — NOT in live log, so caps are fetched
+  3. 0x140261535 CALL FUN_1402b3380(ctx, ctx+0x10f40)     ; device status
+       ==2 -> warning only, continues
+  4. 0x1402615d1 CALL setup_device_capabilities (FUN_140263c90)  ; fills arrays
+       fail -> return 7 — NOT in live log, so the for-each ran (and logged
+       "Found unmapped stream 0/6/8/10" for the 5L's unmapped ids)
+  5. 0x14026160e CALL builder(info, 0, 0x100)             ; extra device info
+  6. 0x14026161b CALL FUN_1402b32b0                        ; display area
+  7. 0x1402616b2 CALL FUN_1402b3390                        ; track box
+  8. 0x140261711/0x140261724 CALL FUN_140263c70(ctx, 1/2) ; mounting
+  9. finalizers FUN_140263010/0x140263610/0x140262db0/0x140263520/FUN_140261a70
+
+STRING CORRECTION: 0x140468a68 ("AvailableTrackerUrls") referenced at
+0x1402614e9 is the FORMAT STRING of the "Could not get tracker capabilities for
+device %s" error branch (castor_device.cpp line 0xfa), NOT Ghost's eyetracking
+verdict. Ghost's "We only discovered devices that doesn't support eyetracking"
+lives UTF-16 in app-1.14.1/TobiiGhost.dll and is evaluated client-side from what
+the service announces — i.e. the gaze capability entry in the caps array.
+
+SAFETY PROOF for patch_ae34_hmd.py: across every decompiled castor function,
+ae34 is read ONLY in stream_type_receiver (FUN_140264c90), and every read is a
+bare ==1 comparison:
+  - (a5b0 != 1) || (ae34 != 1)  -> append gaze entry  [stream 1 + stream 5 blocks]
+  - (a5b0 == 1) && (ae34 == 1)  -> pick stream enum 0x1e vs 0x13  [stream 9]
+No other consumer; no arithmetic on the value. NOPing EB 1B -> 90 90 only moves
+the HMD string from the 1-bucket to the 0-bucket. Nothing else can shift.
