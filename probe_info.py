@@ -25,35 +25,40 @@ So the single decisive question: what does the 5L answer to op 0x354?
 import sys
 
 from probe_caps2 import (
+    HELLO_PAYLOAD,
     OP_HELLO,
     OP_QUERY_REALM,
     Probe,
     drain,
     find_device,
-    hexdump,
     parse_frames,
 )
 
 OP_DEVICE_INFO = 0x354
 
 
-def send_and_dump(p, op, payload, label):
-    """Send one op, drain the answer frames, return list of (op, payload)."""
+def send_op(p, op, payload, label):
+    """Send one op; drain prints every frame itself and returns raw bytes."""
     print(f"[i] {label}...", flush=True)
     try:
         p.send(op, payload)
     except Exception as exc:  # noqa: BLE001
         print(f"[!] send failed: {exc}", flush=True)
-        return []
-    data = drain(p, seconds=1.0, label=label)
-    frames = parse_frames(data)
-    for op_seen, pl in frames:
-        status = "OK" if op_seen == op else f"?0x{op_seen:x}"
-        print(f"    <- 0x{op_seen:x} plen={len(pl)} {status}")
-        hexdump(pl)
-    if not frames:
+        return None
+    resp = drain(p, 1.0, f"{label}: ")
+    if not resp:
         print("    (no response)")
-    return frames
+        return None
+    frames = parse_frames(resp)
+    hits = [f for f in frames if f[1] == op]
+    if hits:
+        plens = [f[2] for f in hits]
+        print(f"    [i] answered op 0x{op:x}: {len(hits)} frame(s), plens={plens}")
+    else:
+        ops = sorted({f[1] for f in frames if f[1] is not None})
+        print(f"    [!] no frame for op 0x{op:x}; saw ops "
+              f"{[hex(o) for o in ops]}")
+    return resp
 
 
 def main():
@@ -70,12 +75,14 @@ def main():
             p.close()
             return 2
 
-        # HELLO first (same stream list as the working demo / probe_caps2).
-        p.send(OP_HELLO, b"")
-        drain(p, seconds=0.5, label="hello")
+        # HELLO with the demo's stream list — an empty hello gets only a bare
+        # 32-byte ack (plen=0) and the device never negotiates.
+        print("[i] HELLO (op 0x3e8, demo stream list)...", flush=True)
+        p.send(OP_HELLO, HELLO_PAYLOAD)
+        drain(p, 1.0, "hello: ")
 
         # Reference: realm (known-good op).
-        send_and_dump(p, OP_QUERY_REALM, b"\x00\x00", "realm 0x640")
+        send_op(p, OP_QUERY_REALM, b"\x00\x00", "realm 0x640")
 
         # The decisive query. The service sends an empty payload (arg 0 in
         # FUN_1403da6c0(info, 0, 0x354)); try empty, then 2 zero bytes, then a
@@ -85,11 +92,18 @@ def main():
             (b"\x00\x00", "device info 0x354 [00 00]"),
             (b"\x00\x00\x00\x00", "device info 0x354 [00000000]"),
         ]
+        answered = False
         for payload, label in variants:
-            frames = send_and_dump(p, OP_DEVICE_INFO, payload, label)
-            if frames:
-                # First answering variant wins; stop hammering the device.
-                break
+            resp = send_op(p, OP_DEVICE_INFO, payload, label)
+            if resp:
+                frames = parse_frames(resp)
+                # First variant with a real answer wins; stop hammering.
+                if any(f[1] == OP_DEVICE_INFO and f[2] for f in frames):
+                    answered = True
+                    break
+        if not answered:
+            print("[!] op 0x354 not answered by any payload variant — "
+                  "integration type stays unknown")
         print("[i] done")
         return 0
     finally:
