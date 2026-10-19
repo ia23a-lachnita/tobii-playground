@@ -548,3 +548,45 @@ NEXT LEVER (service-side, our controlled exe): force the five identity
 copy-branches in setup_device_info to always fill (defaults/whatever bytes are
 present), so the Gaming SDK sees complete identity. Requires antigravity
 second opinion before implementation (project rule).
+
+## 2026-10-19 — IDENTITY FIELDS + ae34=1 PATCHED & DEPLOYED (repo); admin deploy pending
+
+Antigravity consulted (ask_ai with context+prompt framing) → cleared the
+always-force-identity approach with safeguards.
+
+RE analysis of `setup_device_info` (FUN_1402640d0) and `stream_type_receiver`
+(FUN_140264c90) identified exact gates:
+
+  - **5 identity fields** (sub platform type @+0x178, lot id @+0x1d0, integration
+    id @+0x218, calibration version @+0x2b0, calibration date @+0x348): each
+    guarded by `cmp dword ptr [r14+offset], 1 / jne skip_copy` — all 5 flags are
+    0 for 5L → fields zeroed + "Could not get" logged (9× each in pr_log0.txt).
+  - **ae34 (platform classifier)** set by string compare with "Internal_display":
+    result 0 (no match) or 2 (match) — **never 1**. `stream_type_receiver`
+    (FUN_140264c90) gates gaze stream (type 5) on
+    `if (a5b0 != 1 || ae34 != 1) { add fallback stream 3 instead }` →
+    gaze stream unmapped → "Found unmapped stream 0" (and 1..12 on some boots).
+
+Patches applied to repo binary (sha a1725ed08a94, 6 byte-level changes):
+
+| Target | File offset | VA | Before | After | Effect |
+|--------|-------------|-----|--------|-------|--------|
+| sub platform type jne | 0x26374f | 0x14026374f | 75 22 | 90 90 | force-copy field |
+| lot id jne | 0x2637f0 | 0x1402637f0 | 75 22 | 90 90 | force-copy field |
+| integration id jne | 0x263891 | 0x140263891 | 75 22 | 90 90 | force-copy field |
+| calibration version jne | 0x263932 | 0x140263932 | 75 22 | 90 90 | force-copy field |
+| calibration date jne | 0x2639d3 | 0x1402639d3 | 75 22 | 90 90 | force-copy field |
+| ae34 assignment | 0x263692 | 0x140263692 | 33 ff 85 c0 41 0f 44 fc 89 be 34 ae 00 00 | bf 01 00 00 00 89 be 34 ae 00 00 90 90 90 | force ae34=1 |
+
+Verified all 6 patches in repo binary. Commit 6ba3267 pushed.
+
+**Deploy to installed service (run as admin):**
+
+```powershell
+Stop-Service TobiiPlatformRuntime -Force
+Copy-Item "C:\Users\xursc\projects\tobii_playground\platform_runtime_service.exe" "C:\Program Files\Tobii\Platform Runtime\platform_runtime_IS5LEYETRACKER5_service.exe" -Force
+Start-Service TobiiPlatformRuntime
+```
+
+Then unplug/replug the 5L, relaunch Ghost. PASS = Ghost lists the tracker
+instead of "doesn't support eyetracking".
