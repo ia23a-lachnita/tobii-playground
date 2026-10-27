@@ -2,12 +2,14 @@
     "warp_key": "VK_CAPITAL",
     "toggle_key": "VK_F9",
     "continuous_mode_enabled": false,
-    "dwell_click_enabled": false,
-    "dwell_time_seconds": 0.55,
-    "dwell_radius_pixels": 40,
-    "dwell_cooldown_seconds": 0.8,
-    "min_cutoff": 0.7,
+    "dwell_click_enabled": true,
+    "dwell_time_seconds": 0.40,
+    "dwell_radius_pixels": 45,
+    "dwell_cooldown_seconds": 0.70,
+    "blink_click_enabled": true,
+    "click_on_warp_release": false,
+    "min_cutoff": 0.75,
     "beta": 0.04,
-    "screen_margin_x": 0,
-    "screen_margin_y": 0
+    "offset_x": 0,
+    "offset_y": 0
 }
