@@ -2,13 +2,11 @@
 """
 Tobii Eye Tracker 5L Enterprise PC & Mouse Controller
 ======================================================
-High-performance, ultra-responsive gaze controller:
-  1. Instant Mouse Warp (Caps Lock): Teleports cursor to gaze with zero lag.
-  2. Caps Lock Dwell Click: Hold Caps Lock and stare at any button for 0.35s to click.
-  3. Continuous Hands-Free Eye Mouse (F9): High-speed 1€ filter (stable fixations, zero lag on saccades).
-  4. Continuous Dwell Clicking: Auto-clicks on sustained fixation.
-  5. High-Precision Polynomial Calibration: Automatically evaluates `user_calibration.json`.
-  6. Live Alignment Nudge: Ctrl + Arrow Keys to adjust cursor offset in real time.
+Zero-lag gaze pointing controller (all clicking handled with physical mouse):
+  1. Instant Mouse Warp (Caps Lock): Teleports cursor to gaze with zero latency.
+  2. Continuous Hands-Free Eye Mouse (F9): 1€ adaptive filter (steady fixations, instant saccades).
+  3. High-Precision Polynomial Calibration: Automatically evaluates `user_calibration.json`.
+  4. Live Alignment Nudge: Ctrl + Arrow Keys to adjust cursor offset in real time.
 """
 
 import ctypes
@@ -16,7 +14,6 @@ from ctypes import wintypes, byref, windll
 import os
 import sys
 import time
-import math
 import json
 
 # Load patched 64-bit Tobii Stream Engine DLL
@@ -27,11 +24,6 @@ if not os.path.exists(DLL_PATH):
 dll = ctypes.CDLL(DLL_PATH)
 
 # Windows Virtual Keys
-VK_LBUTTON   = 0x01
-VK_RBUTTON   = 0x02
-VK_MBUTTON   = 0x04
-VK_XBUTTON1  = 0x05
-VK_XBUTTON2  = 0x06
 VK_CONTROL   = 0x11
 VK_CAPITAL   = 0x14 # Caps Lock
 VK_ESCAPE    = 0x1B
@@ -44,11 +36,6 @@ VK_F8        = 0x77
 VK_F9        = 0x78
 VK_F10       = 0x79
 VK_F12       = 0x7B
-
-MOUSEEVENTF_LEFTDOWN  = 0x0002
-MOUSEEVENTF_LEFTUP    = 0x0004
-MOUSEEVENTF_RIGHTDOWN = 0x0008
-MOUSEEVENTF_RIGHTUP   = 0x0010
 
 class POINT(ctypes.Structure):
     _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
@@ -101,17 +88,6 @@ def get_cursor_pos():
 def set_cursor_pos(x, y):
     windll.user32.SetCursorPos(int(x), int(y))
 
-def click_mouse(button='left'):
-    down_flag = MOUSEEVENTF_LEFTDOWN if button == 'left' else MOUSEEVENTF_RIGHTDOWN
-    up_flag = MOUSEEVENTF_LEFTUP if button == 'left' else MOUSEEVENTF_RIGHTUP
-    windll.user32.mouse_event(down_flag, 0, 0, 0, 0)
-    time.sleep(0.015)
-    windll.user32.mouse_event(up_flag, 0, 0, 0, 0)
-    try:
-        windll.user32.MessageBeep(0)
-    except Exception:
-        pass
-
 def is_key_down(vk_code):
     return (windll.user32.GetAsyncKeyState(vk_code) & 0x8000) != 0
 
@@ -143,12 +119,10 @@ class FastOneEuroFilter:
             return x
 
         dt = max(t - self.t_prev, 0.0001)
-        # Compute normalized velocity
         dx = (x - self.x_prev) / dt
         edx = self.dx_prev + self._alpha(self.d_cutoff, dt) * (dx - self.dx_prev)
         self.dx_prev = edx
 
-        # During saccades, beta*|edx| increases cutoff frequency dramatically, removing lag
         cutoff = self.min_cutoff + self.beta * abs(edx)
         alpha = self._alpha(cutoff, dt)
         x_filtered = self.x_prev + alpha * (x - self.x_prev)
@@ -184,16 +158,6 @@ class TobiiMouseController:
         self.gaze_valid = False
         self.last_gaze_time = 0.0
 
-        # Dwell tracking for continuous mode
-        self.dwell_start_time = None
-        self.dwell_anchor = (0, 0)
-        self.last_click_time = 0.0
-
-        # Warp Dwell Tracking (holding Caps Lock)
-        self.warp_hold_start = None
-        self.warp_anchor = (0, 0)
-        self.warp_has_clicked = False
-
         # State flags
         self.is_running = True
         self.continuous_mode = self.config.get("continuous_mode_enabled", False)
@@ -216,12 +180,12 @@ class TobiiMouseController:
                 with open(calib_file, "r") as f:
                     data = json.load(f)
                     if "poly_coeffs" in data:
-                        raw_c = data["poly_coeffs"] # 6x2 matrix: [[c0x, c0y], [c1x, c1y], ...]
+                        raw_c = data["poly_coeffs"]
                         self.poly_x = [row[0] for row in raw_c]
                         self.poly_y = [row[1] for row in raw_c]
                         print(f"[Calibration] Loaded 9-Point Polynomial Profile (Mean Error: ±{data.get('mean_error_pixels', 0):.1f} px)")
                     elif "matrix" in data:
-                        raw_m = data["matrix"] # 3x2 matrix: [[ax, ay], [bx, by], [cx, cy]]
+                        raw_m = data["matrix"]
                         self.aff_x = [raw_m[0][0], raw_m[1][0], raw_m[2][0]]
                         self.aff_y = [raw_m[0][1], raw_m[1][1], raw_m[2][1]]
                         print(f"[Calibration] Loaded Affine Profile (Mean Error: ±{data.get('mean_error_pixels', 0):.1f} px)")
@@ -235,11 +199,6 @@ class TobiiMouseController:
             "warp_key": "VK_CAPITAL",           # Caps Lock for instant Mouse Warp
             "toggle_key": "VK_F9",              # F9 to toggle continuous hands-free tracking
             "continuous_mode_enabled": False,   # Start with Warp-on-Hotkey
-            "dwell_click_enabled": True,        # Dwell clicking active
-            "dwell_time_seconds": 0.35,         # 350ms gaze dwell triggers click
-            "dwell_radius_pixels": 45,          # Movement tolerance during dwell
-            "dwell_cooldown_seconds": 0.60,     # Cooldown between successive clicks
-            "click_on_warp_release": False,     # Click when releasing Caps Lock
             "min_cutoff": 1.2,                  # Responsive fixation filtering
             "beta": 8.0,                        # High beta = instantaneous zero-lag saccades
             "offset_x": 0,                      # Manual horizontal alignment nudge (Ctrl+Left/Right)
@@ -256,14 +215,10 @@ class TobiiMouseController:
                 json.dump(defaults, f, indent=4)
 
         self.config = defaults
-        self.min_cutoff = float(defaults["min_cutoff"])
-        self.beta = float(defaults["beta"])
-        self.dwell_time = float(defaults["dwell_time_seconds"])
-        self.dwell_radius = float(defaults["dwell_radius_pixels"])
-        self.dwell_cooldown = float(defaults["dwell_cooldown_seconds"])
+        self.min_cutoff = float(defaults.get("min_cutoff", 1.2))
+        self.beta = float(defaults.get("beta", 8.0))
         self.offset_x = int(defaults.get("offset_x", 0))
         self.offset_y = int(defaults.get("offset_y", 0))
-        self.click_on_warp_release = defaults.get("click_on_warp_release", False)
 
     def save_config(self):
         self.config["offset_x"] = self.offset_x
@@ -401,7 +356,6 @@ class TobiiMouseController:
             self.save_config()
 
     def process_mouse_interaction(self):
-        now = time.time()
         self.check_live_nudge()
 
         # Check Toggle Hotkey (F9)
@@ -410,53 +364,14 @@ class TobiiMouseController:
             self.continuous_mode = not self.continuous_mode
             status = "ENABLED" if self.continuous_mode else "PAUSED"
             print(f"\n>>> [Mouse Mode] Continuous Eye Tracking is now {status} <<<")
-            try:
-                windll.user32.MessageBeep(0)
-            except Exception:
-                pass
             self.filter_x.reset()
             self.filter_y.reset()
-            self.dwell_start_time = None
         self.prev_toggle_down = toggle_down
 
         # Warp Key (Caps Lock) Handling
         warp_down = is_key_down(self.warp_key)
-
-        if warp_down and not self.prev_warp_down:
-            # Caps Lock just pressed: instant warp
-            self.warp_hold_start = now
-            self.warp_has_clicked = False
-            self.warp_anchor = self.latest_raw_pixel
+        if warp_down:
             self.warp_to_gaze()
-
-        elif warp_down and self.prev_warp_down:
-            # Caps Lock is being held down: track raw gaze & check dwell click
-            self.warp_to_gaze()
-            gx, gy = self.latest_raw_pixel
-
-            if not self.warp_has_clicked:
-                dist = math.hypot(gx - self.warp_anchor[0], gy - self.warp_anchor[1])
-                if dist > self.dwell_radius or self.warp_hold_start is None:
-                    # Gaze moved to another item: reset dwell timer
-                    self.warp_anchor = (gx, gy)
-                    self.warp_hold_start = now
-                else:
-                    hold_time = now - self.warp_hold_start
-                    if hold_time >= self.dwell_time and (now - self.last_click_time) > self.dwell_cooldown:
-                        print(f"\n [Caps Lock Dwell Click] Clicked at ({gx}, {gy})!")
-                        click_mouse('left')
-                        self.last_click_time = now
-                        self.warp_has_clicked = True
-
-        elif not warp_down and self.prev_warp_down:
-            # Caps Lock released
-            if self.click_on_warp_release and not self.warp_has_clicked:
-                print(f"\n [Warp Release Click] Clicked at {self.latest_raw_pixel}!")
-                click_mouse('left')
-                self.last_click_time = now
-            self.warp_hold_start = None
-            self.warp_has_clicked = False
-
         self.prev_warp_down = warp_down
 
         # Continuous Tracking Mode
@@ -464,26 +379,12 @@ class TobiiMouseController:
             gx, gy = self.latest_filtered_pixel
             set_cursor_pos(gx, gy)
 
-            # Continuous Dwell Click
-            if self.config.get("dwell_click_enabled", True):
-                dist = math.hypot(gx - self.dwell_anchor[0], gy - self.dwell_anchor[1])
-                if dist > self.dwell_radius or self.dwell_start_time is None:
-                    self.dwell_anchor = (gx, gy)
-                    self.dwell_start_time = now
-                else:
-                    dwell_duration = now - self.dwell_start_time
-                    if dwell_duration >= self.dwell_time and (now - self.last_click_time) >= self.dwell_cooldown:
-                        print(f"\n [Dwell Click] Clicked at ({gx}, {gy})")
-                        click_mouse('left')
-                        self.last_click_time = now
-                        self.dwell_start_time = None
-
     def run(self):
         print("=" * 70)
         print("      Tobii Eye Tracker 5L - Enterprise PC & Mouse Controller      ")
         print("=" * 70)
         print(f" * Mouse Warp:          Hold [{self.config['warp_key']}] to snap cursor to gaze instantly")
-        print(f" * Warp Dwell Click:    Hold [{self.config['warp_key']}] on any button for {self.dwell_time*1000:.0f}ms -> AUTO-CLICK")
+        print(f" * Clicking:            Use your physical mouse to click normally")
         print(f" * Continuous Mode:     Press [{self.config['toggle_key']}] to toggle hands-free tracking")
         print(f" * Live Alignment:      Ctrl + Arrow Keys to nudge offset on the fly")
         print(f" * Rapid Calibration:   Run 'python calibrate.py' for sub-centimeter accuracy")
