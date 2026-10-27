@@ -15,6 +15,7 @@ import os
 import sys
 import time
 import json
+import math
 
 # Load patched 64-bit Tobii Stream Engine DLL
 DLL_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "x64_patched_tobii_stream_engine.dll"))
