@@ -211,18 +211,22 @@ class TobiiMouseController:
         self.device = ctypes.c_void_p()
 
     def load_calibration(self):
+        self.calib_matrix = None
+        self.poly_coeffs = None
         calib_file = os.path.abspath(os.path.join(os.path.dirname(__file__), "user_calibration.json"))
         if os.path.exists(calib_file):
             try:
                 with open(calib_file, "r") as f:
                     data = json.load(f)
-                    self.calib_matrix = np.array(data["matrix"])
-                    print(f"[Calibration] Loaded profile (Mean Error: ±{data.get('mean_error_pixels', 0):.1f} px)")
+                    if "poly_coeffs" in data:
+                        self.poly_coeffs = np.array(data["poly_coeffs"])
+                        print(f"[Calibration] Loaded 9-Point Polynomial Profile (Mean Error: ±{data.get('mean_error_pixels', 0):.1f} px)")
+                    elif "matrix" in data:
+                        self.calib_matrix = np.array(data["matrix"])
+                        print(f"[Calibration] Loaded Affine Profile (Mean Error: ±{data.get('mean_error_pixels', 0):.1f} px)")
             except Exception as e:
                 print(f"[Calibration] Error loading {calib_file}: {e}")
-                self.calib_matrix = None
         else:
-            self.calib_matrix = None
             print("[Calibration] No custom profile found. Run 'python calibrate.py' for sub-centimeter accuracy.")
 
     def load_config(self):
@@ -282,7 +286,11 @@ class TobiiMouseController:
                 # Deliberate command blink is between 180ms and 450ms
                 if 0.18 <= blink_duration <= 0.45 and self.pre_blink_pos is not None:
                     # Calculate new raw position
-                    if self.calib_matrix is not None:
+                    if self.poly_coeffs is not None:
+                        phi_test = np.array([1.0, d.position_x, d.position_y, d.position_x**2, d.position_y**2, d.position_x * d.position_y])
+                        pred = phi_test @ self.poly_coeffs
+                        px_test, py_test = pred[0], pred[1]
+                    elif self.calib_matrix is not None:
                         pred = np.array([d.position_x, d.position_y, 1.0]) @ self.calib_matrix
                         px_test, py_test = pred[0], pred[1]
                     else:
@@ -306,8 +314,13 @@ class TobiiMouseController:
             fx = self.filter_x.filter(d.position_x, now)
             fy = self.filter_y.filter(d.position_y, now)
 
-            # Map to screen pixels: calibration matrix or native screen size
-            if self.calib_matrix is not None:
+            # Map to screen pixels: 2nd-order polynomial, affine, or native screen size
+            if self.poly_coeffs is not None:
+                phi = np.array([1.0, fx, fy, fx**2, fy**2, fx * fy])
+                screen_coord = phi @ self.poly_coeffs
+                px = int(screen_coord[0]) + self.offset_x
+                py = int(screen_coord[1]) + self.offset_y
+            elif self.calib_matrix is not None:
                 screen_coord = np.array([fx, fy, 1.0]) @ self.calib_matrix
                 px = int(screen_coord[0]) + self.offset_x
                 py = int(screen_coord[1]) + self.offset_y

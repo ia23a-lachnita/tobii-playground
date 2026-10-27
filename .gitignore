@@ -23,4 +23,5 @@ elev*.vbs
 elev.ps1
 bootstrap_elev*.ps1
 trigger_uac.bat
+user_calibration.json
 
