@@ -106,19 +106,17 @@ class CalibrationAndFOVApp:
         self.root.bind("<Key-s>", lambda e: self.on_skip_pressed())
         self.root.bind("<Key-S>", lambda e: self.on_skip_pressed())
 
-        # Comprehensive 11-point screen coverage (high density on upper edge/corners)
+        # 9 High-precision calibration targets (center, 4 edges, 4 corners)
         self.targets = [
             (0.50, 0.50), # 1. Center
-            (0.50, 0.07), # 2. Top-Center
-            (0.07, 0.07), # 3. Top-Left
-            (0.93, 0.07), # 4. Top-Right
-            (0.07, 0.50), # 5. Mid-Left
-            (0.93, 0.50), # 6. Mid-Right
-            (0.07, 0.93), # 7. Bottom-Left
-            (0.50, 0.93), # 8. Bottom-Center
-            (0.93, 0.93), # 9. Bottom-Right
-            (0.28, 0.22), # 10. Upper-Mid-Left
-            (0.72, 0.22), # 11. Upper-Mid-Right
+            (0.50, 0.12), # 2. Top-Center
+            (0.12, 0.12), # 3. Top-Left
+            (0.88, 0.12), # 4. Top-Right
+            (0.10, 0.50), # 5. Mid-Left
+            (0.90, 0.50), # 6. Mid-Right
+            (0.12, 0.88), # 7. Bottom-Left
+            (0.50, 0.88), # 8. Bottom-Center
+            (0.88, 0.88), # 9. Bottom-Right
         ]
 
         self.current_idx = 0
@@ -259,23 +257,20 @@ class CalibrationAndFOVApp:
     def on_space_pressed(self):
         if self.app_mode == "ALIGNMENT":
             self.on_enter_pressed()
-        elif self.app_mode == "CALIBRATION":
-            # Spacebar forces capture of current target if at least 3 samples are present
-            if len(self.current_samples) >= 3:
-                tx, ty = self.target_px
-                self.trigger_explosion(tx, ty)
-            else:
-                # Add current raw gaze as sample
-                gx, gy = self.raw_gaze_norm
-                self.current_samples.extend([(gx, gy)] * 10)
-                tx, ty = self.target_px
-                self.trigger_explosion(tx, ty)
+        elif self.app_mode == "CALIBRATION" and self.target_state in ("IDLE", "CHARGING"):
+            # Spacebar forces capture of current target
+            gx, gy = self.raw_gaze_norm
+            if len(self.current_samples) < 10:
+                self.current_samples.extend([(gx, gy)] * 15)
+            tx, ty = self.target_px
+            self.trigger_explosion(tx, ty)
 
     def on_skip_pressed(self):
-        if self.app_mode == "CALIBRATION":
+        if self.app_mode == "CALIBRATION" and self.target_state not in ("TRANSITIONING", "EXPLODING"):
             print(f"[Calibration] Skipped point {self.current_idx + 1}")
+            self.target_state = "TRANSITIONING"
             self.current_idx += 1
-            self.init_target()
+            self.root.after(150, self.init_target)
 
     def start(self):
         self.pump_tobii()
@@ -427,6 +422,9 @@ class CalibrationAndFOVApp:
         self.particles = []
 
     def render_calibration_frame(self):
+        if self.target_state == "TRANSITIONING":
+            return
+
         self.canvas.delete("all")
         tx, ty = self.target_px
 
@@ -434,7 +432,7 @@ class CalibrationAndFOVApp:
         progress_text = f"Point {self.current_idx + 1} of {len(self.targets)}"
         self.canvas.create_text(self.w // 2, 40, text=progress_text, font=("Segoe UI", 18, "bold"), fill="#00D2FF")
         self.canvas.create_text(self.w // 2, 68,
-                                text="Look at the dot until it explodes   •   [Space] Force Lock   •   [S] Skip Point   •   [Esc] Cancel",
+                                text="Focus on the target dot until it explodes   •   [Space] Force Lock   •   [S] Skip Point   •   [Esc] Cancel",
                                 font=("Segoe UI", 12), fill="#667788")
 
         # User gaze position
@@ -443,12 +441,6 @@ class CalibrationAndFOVApp:
 
         # Adaptive lock threshold (up to 240px to compensate for uncalibrated corner shifts)
         gaze_locked = (dist_to_target < 240) and self.gaze_valid
-
-        # Magnetic attractor line connecting gaze to target
-        if self.gaze_valid and dist_to_target < 450:
-            alpha_color = "#005544" if not gaze_locked else "#00AA66"
-            self.canvas.create_line(gx, gy, tx, ty, fill=alpha_color, width=2, dash=(4, 4))
-            self.canvas.create_oval(gx - 6, gy - 6, gx + 6, gy + 6, fill="#00FFAA", outline="")
 
         if self.target_state != "EXPLODING":
             if gaze_locked:
@@ -511,9 +503,11 @@ class CalibrationAndFOVApp:
             self.particles = alive_particles
 
             if not self.particles:
+                self.target_state = "TRANSITIONING"
                 self.collected_data.append((self.target_px, list(self.current_samples)))
                 self.current_idx += 1
-                self.root.after(150, self.init_target)
+                self.root.after(200, self.init_target)
+                return
 
     def trigger_explosion(self, tx, ty):
         self.target_state = "EXPLODING"
