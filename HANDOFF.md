@@ -621,3 +621,26 @@ instead of "doesn't support eyetracking".
   - `Device subscribed to PRP_STREAM_ENUM_GAZE_POINT`
   - `Client 10 successfully subscribed to stream PRP_STREAM_ENUM_GAZE_POINT`
   - Probe: `gazeCallbacks=166` in 5.1s (~33 Hz streaming).
+
+## 2026-10-27 — User Position Guide Fix, Tobii Experience Calibration, and Enterprise Mouse Controller
+
+### 1. User Position Guide & Calibration Fix
+- Root cause: Compound stream 4 (`PRP_COMPOUND_STREAM_ENUM_USER_POSITION_GUIDE_XYZ`) failed during Tobii Experience calibration with `PLATMOD_ERROR_NOT_SUPPORTED` because 5L firmware rejected the subscribe opcode and did not activate camera/illuminator engines for compound stream 4 in isolation.
+- Patched `platform_runtime_service.exe`:
+  - `0x27799b` (`0x14027859b`): `8bf085c0752e` -> `31f690909090` (`xor esi, esi; nop...`) in `0x1402784a0`, suppressing `TRACKER_ERROR_NOT_SUPPORTED`.
+  - `0x27857d` (`0x14027917d`): `c6410501c6410b01c3` (`mov byte ptr [rcx+5], 1; mov byte ptr [rcx+0xb], 1; ret`), automatically activating stream 5 & 0xb (camera & gaze) on the tracker whenever User Position Guide is requested.
+  - `0x2785bd` (`0x1402791bd`): `c6410500c6410b00c3` (`mov byte ptr [rcx+5], 0; mov byte ptr [rcx+0xb], 0; ret`) for clean deactivation on unsubscribe.
+- Verified in `test_guide_sub.py`: successfully streamed hundreds of real-time frames:
+  `[USER_POS_GUIDE] L_val=1 L=(0.62, 0.31, 0.33) R_val=1 R=(0.46, 0.32, 0.33)`.
+- Calibration completed smoothly in Tobii Experience.
+
+### 2. Enterprise Telemetry & PC / Mouse Control
+- Reverse engineered Tobii EyeX interaction internals (`Tobii.EyeX.Interaction.Modules.dll`). Tobii stripped `PointersModule` from Tobii Experience to gate mouse control away from consumer Eye Tracker 5 users.
+- Created `tobii_controller.py`:
+  - **Mouse Warp (Warp-on-Hotkey)**: Tap or hold `Caps Lock` to snap cursor instantly to gaze with 0 latency.
+  - **Continuous Hands-Free Gaze Mouse**: 1€ adaptive filtering (minimizes tremor on fixations, 0 lag on saccades). Toggle with `F9`.
+  - **Dwell Clicking**: Hands-free click on fixating for 550ms.
+  - Primary display resolution (1920x1080) automatically mapped.
+- Created `test_enterprise_features.py`:
+  - Verified concurrent streaming: Gaze Point 2D, Head Pose 6DOF (pitch/yaw/roll/x/y/z), User Position Guide 3D, and User Presence simultaneously at ~33 Hz.
+
