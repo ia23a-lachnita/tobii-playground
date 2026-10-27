@@ -2,14 +2,13 @@
 """
 Tobii Eye Tracker 5L Enterprise PC & Mouse Controller
 ======================================================
-Features:
+High-performance, ultra-responsive gaze controller:
   1. Instant Mouse Warp (Caps Lock): Teleports cursor to gaze with zero lag.
-  2. Caps Lock Dwell Click: Hold Caps Lock and stare at any button for 0.40s to click!
-  3. Blink to Click: Deliberate 250ms blink on any target triggers a left-click!
-  4. Continuous Hands-Free Eye Mouse (F9): 1€ adaptive filtering (dead-still on buttons, 0-lag on saccades).
-  5. Continuous Dwell Clicking: Stare at a target for 0.50s in continuous mode to auto-click.
-  6. Rapid Calibration Support: Automatically loads `user_calibration.json` (from `python calibrate.py`).
-  7. Live Alignment Nudge: Press Ctrl + Arrow Keys anytime to shift gaze offset in real time!
+  2. Caps Lock Dwell Click: Hold Caps Lock and stare at any button for 0.35s to click.
+  3. Continuous Hands-Free Eye Mouse (F9): High-speed 1€ filter (stable fixations, zero lag on saccades).
+  4. Continuous Dwell Clicking: Auto-clicks on sustained fixation.
+  5. High-Precision Polynomial Calibration: Automatically evaluates `user_calibration.json`.
+  6. Live Alignment Nudge: Ctrl + Arrow Keys to adjust cursor offset in real time.
 """
 
 import ctypes
@@ -19,8 +18,6 @@ import sys
 import time
 import math
 import json
-import threading
-import numpy as np
 
 # Load patched 64-bit Tobii Stream Engine DLL
 DLL_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "x64_patched_tobii_stream_engine.dll"))
@@ -124,9 +121,9 @@ def get_screen_resolution():
     return (w if w > 0 else 1920, h if h > 0 else 1080)
 
 
-class OneEuroFilter:
-    """1€ Filter: Adaptive Low-Pass Filter for high accuracy fixation + instantaneous saccade tracking."""
-    def __init__(self, min_cutoff=0.8, beta=0.03, d_cutoff=1.0):
+class FastOneEuroFilter:
+    """Ultra-responsive 1€ Filter tuned specifically for normalized gaze coordinates."""
+    def __init__(self, min_cutoff=1.2, beta=8.0, d_cutoff=1.0):
         self.min_cutoff = min_cutoff
         self.beta = beta
         self.d_cutoff = d_cutoff
@@ -146,10 +143,12 @@ class OneEuroFilter:
             return x
 
         dt = max(t - self.t_prev, 0.0001)
+        # Compute normalized velocity
         dx = (x - self.x_prev) / dt
         edx = self.dx_prev + self._alpha(self.d_cutoff, dt) * (dx - self.dx_prev)
         self.dx_prev = edx
 
+        # During saccades, beta*|edx| increases cutoff frequency dramatically, removing lag
         cutoff = self.min_cutoff + self.beta * abs(edx)
         alpha = self._alpha(cutoff, dt)
         x_filtered = self.x_prev + alpha * (x - self.x_prev)
@@ -157,8 +156,8 @@ class OneEuroFilter:
         self.t_prev = t
         return x_filtered
 
-    def reset(self):
-        self.x_prev = None
+    def reset(self, x=None):
+        self.x_prev = x
         self.t_prev = None
         self.dx_prev = 0.0
 
@@ -169,15 +168,19 @@ class TobiiMouseController:
         self.screen_w, self.screen_h = get_screen_resolution()
         print(f"[Controller] Primary Display: {self.screen_w} x {self.screen_h}")
 
-        self.calib_matrix = None
+        self.poly_x = None
+        self.poly_y = None
+        self.aff_x = None
+        self.aff_y = None
         self.load_calibration()
         self.load_config()
 
-        self.filter_x = OneEuroFilter(min_cutoff=self.min_cutoff, beta=self.beta)
-        self.filter_y = OneEuroFilter(min_cutoff=self.min_cutoff, beta=self.beta)
+        # Filters with tuned high-speed response
+        self.filter_x = FastOneEuroFilter(min_cutoff=self.min_cutoff, beta=self.beta)
+        self.filter_y = FastOneEuroFilter(min_cutoff=self.min_cutoff, beta=self.beta)
 
-        self.latest_gaze_norm = (0.5, 0.5)
-        self.latest_gaze_pixel = (self.screen_w // 2, self.screen_h // 2)
+        self.latest_raw_pixel = (self.screen_w // 2, self.screen_h // 2)
+        self.latest_filtered_pixel = (self.screen_w // 2, self.screen_h // 2)
         self.gaze_valid = False
         self.last_gaze_time = 0.0
 
@@ -190,10 +193,6 @@ class TobiiMouseController:
         self.warp_hold_start = None
         self.warp_anchor = (0, 0)
         self.warp_has_clicked = False
-
-        # Blink Detection
-        self.blink_start_time = None
-        self.pre_blink_pos = None
 
         # State flags
         self.is_running = True
@@ -211,18 +210,20 @@ class TobiiMouseController:
         self.device = ctypes.c_void_p()
 
     def load_calibration(self):
-        self.calib_matrix = None
-        self.poly_coeffs = None
         calib_file = os.path.abspath(os.path.join(os.path.dirname(__file__), "user_calibration.json"))
         if os.path.exists(calib_file):
             try:
                 with open(calib_file, "r") as f:
                     data = json.load(f)
                     if "poly_coeffs" in data:
-                        self.poly_coeffs = np.array(data["poly_coeffs"])
+                        raw_c = data["poly_coeffs"] # 6x2 matrix: [[c0x, c0y], [c1x, c1y], ...]
+                        self.poly_x = [row[0] for row in raw_c]
+                        self.poly_y = [row[1] for row in raw_c]
                         print(f"[Calibration] Loaded 9-Point Polynomial Profile (Mean Error: ±{data.get('mean_error_pixels', 0):.1f} px)")
                     elif "matrix" in data:
-                        self.calib_matrix = np.array(data["matrix"])
+                        raw_m = data["matrix"] # 3x2 matrix: [[ax, ay], [bx, by], [cx, cy]]
+                        self.aff_x = [raw_m[0][0], raw_m[1][0], raw_m[2][0]]
+                        self.aff_y = [raw_m[0][1], raw_m[1][1], raw_m[2][1]]
                         print(f"[Calibration] Loaded Affine Profile (Mean Error: ±{data.get('mean_error_pixels', 0):.1f} px)")
             except Exception as e:
                 print(f"[Calibration] Error loading {calib_file}: {e}")
@@ -235,13 +236,12 @@ class TobiiMouseController:
             "toggle_key": "VK_F9",              # F9 to toggle continuous hands-free tracking
             "continuous_mode_enabled": False,   # Start with Warp-on-Hotkey
             "dwell_click_enabled": True,        # Dwell clicking active
-            "dwell_time_seconds": 0.40,         # 400ms gaze dwell triggers click
+            "dwell_time_seconds": 0.35,         # 350ms gaze dwell triggers click
             "dwell_radius_pixels": 45,          # Movement tolerance during dwell
-            "dwell_cooldown_seconds": 0.70,     # Cooldown between successive clicks
-            "blink_click_enabled": True,        # Command Blink to Click
+            "dwell_cooldown_seconds": 0.60,     # Cooldown between successive clicks
             "click_on_warp_release": False,     # Click when releasing Caps Lock
-            "min_cutoff": 0.75,                 # Lower = smoother on fixations
-            "beta": 0.04,                       # Higher = faster snap on saccades
+            "min_cutoff": 1.2,                  # Responsive fixation filtering
+            "beta": 8.0,                        # High beta = instantaneous zero-lag saccades
             "offset_x": 0,                      # Manual horizontal alignment nudge (Ctrl+Left/Right)
             "offset_y": 0,                      # Manual vertical alignment nudge (Ctrl+Up/Down)
         }
@@ -263,7 +263,6 @@ class TobiiMouseController:
         self.dwell_cooldown = float(defaults["dwell_cooldown_seconds"])
         self.offset_x = int(defaults.get("offset_x", 0))
         self.offset_y = int(defaults.get("offset_y", 0))
-        self.blink_click_enabled = defaults.get("blink_click_enabled", True)
         self.click_on_warp_release = defaults.get("click_on_warp_release", False)
 
     def save_config(self):
@@ -272,74 +271,51 @@ class TobiiMouseController:
         try:
             with open(self.config_file, "w") as f:
                 json.dump(self.config, f, indent=4)
-        except Exception as e:
+        except Exception:
             pass
+
+    def map_to_pixel(self, x, y):
+        """Pure-Python high-speed coordinate projection."""
+        if self.poly_x is not None:
+            cx = self.poly_x
+            cy = self.poly_y
+            x2 = x * x
+            y2 = y * y
+            xy = x * y
+            px = int(cx[0] + cx[1]*x + cx[2]*y + cx[3]*x2 + cx[4]*y2 + cx[5]*xy) + self.offset_x
+            py = int(cy[0] + cy[1]*x + cy[2]*y + cy[3]*x2 + cy[4]*y2 + cy[5]*xy) + self.offset_y
+        elif self.aff_x is not None:
+            ax = self.aff_x
+            ay = self.aff_y
+            px = int(ax[0]*x + ax[1]*y + ax[2]) + self.offset_x
+            py = int(ay[0]*x + ay[1]*y + ay[2]) + self.offset_y
+        else:
+            px = int(x * self.screen_w) + self.offset_x
+            py = int(y * self.screen_h) + self.offset_y
+
+        px = max(0, min(self.screen_w - 1, px))
+        py = max(0, min(self.screen_h - 1, py))
+        return px, py
 
     def on_gaze_data(self, p_data, ud):
         d = p_data.contents
         now = time.time()
 
         if d.validity == 1:
-            # Check if recovering from a blink
-            if not self.gaze_valid and self.blink_start_time is not None:
-                blink_duration = now - self.blink_start_time
-                # Deliberate command blink is between 180ms and 450ms
-                if 0.18 <= blink_duration <= 0.45 and self.pre_blink_pos is not None:
-                    # Calculate new raw position
-                    if self.poly_coeffs is not None:
-                        phi_test = np.array([1.0, d.position_x, d.position_y, d.position_x**2, d.position_y**2, d.position_x * d.position_y])
-                        pred = phi_test @ self.poly_coeffs
-                        px_test, py_test = pred[0], pred[1]
-                    elif self.calib_matrix is not None:
-                        pred = np.array([d.position_x, d.position_y, 1.0]) @ self.calib_matrix
-                        px_test, py_test = pred[0], pred[1]
-                    else:
-                        px_test = d.position_x * self.screen_w
-                        py_test = d.position_y * self.screen_h
-
-                    dist = math.hypot(px_test - self.pre_blink_pos[0], py_test - self.pre_blink_pos[1])
-                    if dist < 85 and self.blink_click_enabled and (now - self.last_click_time) > self.dwell_cooldown:
-                        print(f"\n [Blink Click] Triggered left-click at ({int(px_test)}, {int(py_test)})!")
-                        click_mouse('left')
-                        self.last_click_time = now
-
-                self.blink_start_time = None
-                self.pre_blink_pos = None
-
             self.gaze_valid = True
             self.last_gaze_time = now
-            self.latest_gaze_norm = (d.position_x, d.position_y)
 
-            # Filter raw coordinates with 1-Euro Filter
+            # 1. Instant Raw Position (zero lag for mouse warp)
+            raw_px, raw_py = self.map_to_pixel(d.position_x, d.position_y)
+            self.latest_raw_pixel = (raw_px, raw_py)
+
+            # 2. Filtered Position (fast adaptive smoothing for continuous mode)
             fx = self.filter_x.filter(d.position_x, now)
             fy = self.filter_y.filter(d.position_y, now)
-
-            # Map to screen pixels: 2nd-order polynomial, affine, or native screen size
-            if self.poly_coeffs is not None:
-                phi = np.array([1.0, fx, fy, fx**2, fy**2, fx * fy])
-                screen_coord = phi @ self.poly_coeffs
-                px = int(screen_coord[0]) + self.offset_x
-                py = int(screen_coord[1]) + self.offset_y
-            elif self.calib_matrix is not None:
-                screen_coord = np.array([fx, fy, 1.0]) @ self.calib_matrix
-                px = int(screen_coord[0]) + self.offset_x
-                py = int(screen_coord[1]) + self.offset_y
-            else:
-                px = int(fx * self.screen_w) + self.offset_x
-                py = int(fy * self.screen_h) + self.offset_y
-
-            # Screen bounds clamping
-            px = max(0, min(self.screen_w - 1, px))
-            py = max(0, min(self.screen_h - 1, py))
-            self.latest_gaze_pixel = (px, py)
-
+            filt_px, filt_py = self.map_to_pixel(fx, fy)
+            self.latest_filtered_pixel = (filt_px, filt_py)
         else:
-            # Eyes closed or lost tracking
-            if self.gaze_valid:
-                self.blink_start_time = now
-                self.pre_blink_pos = self.latest_gaze_pixel
-
-            if now - self.last_gaze_time > 0.30:
+            if now - self.last_gaze_time > 0.25:
                 self.gaze_valid = False
 
     def on_head_pose(self, p_data, ud):
@@ -380,10 +356,13 @@ class TobiiMouseController:
         return True
 
     def warp_to_gaze(self):
-        """Instantly teleport cursor to current gaze position."""
+        """Instantly teleport cursor to raw gaze position with zero smoothing lag."""
         if self.gaze_valid:
-            gx, gy = self.latest_gaze_pixel
+            gx, gy = self.latest_raw_pixel
             set_cursor_pos(gx, gy)
+            # Reset continuous filter to current warp location
+            self.filter_x.reset()
+            self.filter_y.reset()
 
     def check_live_nudge(self):
         """Ctrl + Arrow keys adjust alignment in real time."""
@@ -444,16 +423,16 @@ class TobiiMouseController:
         warp_down = is_key_down(self.warp_key)
 
         if warp_down and not self.prev_warp_down:
-            # Caps Lock just pressed: start warp hold
+            # Caps Lock just pressed: instant warp
             self.warp_hold_start = now
             self.warp_has_clicked = False
-            self.warp_anchor = self.latest_gaze_pixel
+            self.warp_anchor = self.latest_raw_pixel
             self.warp_to_gaze()
 
         elif warp_down and self.prev_warp_down:
-            # Caps Lock is being held down: track gaze & check dwell click
+            # Caps Lock is being held down: track raw gaze & check dwell click
             self.warp_to_gaze()
-            gx, gy = self.latest_gaze_pixel
+            gx, gy = self.latest_raw_pixel
 
             if not self.warp_has_clicked:
                 dist = math.hypot(gx - self.warp_anchor[0], gy - self.warp_anchor[1])
@@ -467,12 +446,12 @@ class TobiiMouseController:
                         print(f"\n [Caps Lock Dwell Click] Clicked at ({gx}, {gy})!")
                         click_mouse('left')
                         self.last_click_time = now
-                        self.warp_has_clicked = True # Click once per target
+                        self.warp_has_clicked = True
 
         elif not warp_down and self.prev_warp_down:
             # Caps Lock released
             if self.click_on_warp_release and not self.warp_has_clicked:
-                print(f"\n [Warp Release Click] Clicked at {self.latest_gaze_pixel}!")
+                print(f"\n [Warp Release Click] Clicked at {self.latest_raw_pixel}!")
                 click_mouse('left')
                 self.last_click_time = now
             self.warp_hold_start = None
@@ -482,7 +461,7 @@ class TobiiMouseController:
 
         # Continuous Tracking Mode
         if self.continuous_mode and self.gaze_valid:
-            gx, gy = self.latest_gaze_pixel
+            gx, gy = self.latest_filtered_pixel
             set_cursor_pos(gx, gy)
 
             # Continuous Dwell Click
@@ -503,9 +482,8 @@ class TobiiMouseController:
         print("=" * 70)
         print("      Tobii Eye Tracker 5L - Enterprise PC & Mouse Controller      ")
         print("=" * 70)
-        print(f" * Mouse Warp:          Hold [{self.config['warp_key']}] to snap cursor to gaze")
-        print(f" * Warp Dwell Click:    Hold [{self.config['warp_key']}] on any button for {self.dwell_time*1000:.0f}ms -> AUTO-CLICK!")
-        print(f" * Blink to Click:      Deliberate blink (250ms) on target -> LEFT-CLICK!")
+        print(f" * Mouse Warp:          Hold [{self.config['warp_key']}] to snap cursor to gaze instantly")
+        print(f" * Warp Dwell Click:    Hold [{self.config['warp_key']}] on any button for {self.dwell_time*1000:.0f}ms -> AUTO-CLICK")
         print(f" * Continuous Mode:     Press [{self.config['toggle_key']}] to toggle hands-free tracking")
         print(f" * Live Alignment:      Ctrl + Arrow Keys to nudge offset on the fly")
         print(f" * Rapid Calibration:   Run 'python calibrate.py' for sub-centimeter accuracy")
@@ -529,11 +507,11 @@ class TobiiMouseController:
                 if now - last_status_print > 1.2:
                     mode_str = "CONTINUOUS" if self.continuous_mode else "WARP"
                     valid_str = "TRACKING" if self.gaze_valid else "LOOKING AWAY"
-                    sys.stdout.write(f"\rMode: [{mode_str:10s}] | State: [{valid_str:12s}] | Gaze: ({self.latest_gaze_pixel[0]:4d}, {self.latest_gaze_pixel[1]:4d}) | Offset: ({self.offset_x:+d}, {self.offset_y:+d})")
+                    sys.stdout.write(f"\rMode: [{mode_str:10s}] | State: [{valid_str:12s}] | Gaze: ({self.latest_raw_pixel[0]:4d}, {self.latest_raw_pixel[1]:4d}) | Offset: ({self.offset_x:+d}, {self.offset_y:+d})")
                     sys.stdout.flush()
                     last_status_print = now
 
-                time.sleep(0.005) # 200Hz loop
+                time.sleep(0.003) # 330Hz ultra-low latency loop
 
         except KeyboardInterrupt:
             print("\n[Controller] Stopping...")

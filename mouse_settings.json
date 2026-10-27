@@ -3,13 +3,12 @@
     "toggle_key": "VK_F9",
     "continuous_mode_enabled": false,
     "dwell_click_enabled": true,
-    "dwell_time_seconds": 0.40,
+    "dwell_time_seconds": 0.35,
     "dwell_radius_pixels": 45,
-    "dwell_cooldown_seconds": 0.70,
-    "blink_click_enabled": true,
+    "dwell_cooldown_seconds": 0.60,
     "click_on_warp_release": false,
-    "min_cutoff": 0.75,
-    "beta": 0.04,
+    "min_cutoff": 1.2,
+    "beta": 8.0,
     "offset_x": 0,
     "offset_y": 0
 }
