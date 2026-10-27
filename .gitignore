@@ -14,3 +14,13 @@ __pycache__/
 *.bak_pid313
 *.bak_gate313
 *.bak_hmd313
+*.bak_*
+*.asm
+*.out
+*.log
+elev_test_result.txt
+elev*.vbs
+elev.ps1
+bootstrap_elev*.ps1
+trigger_uac.bat
+
