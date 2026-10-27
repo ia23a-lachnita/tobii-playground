@@ -200,6 +200,8 @@ class TobiiMouseController:
             "warp_key": "VK_CAPITAL",           # Caps Lock for instant Mouse Warp
             "toggle_key": "VK_F9",              # F9 to toggle continuous hands-free tracking
             "continuous_mode_enabled": False,   # Start with Warp-on-Hotkey
+            "edge_gain": 1.12,                  # Edge Overdrive: allows effortless reaching of borders
+            "use_affine": True,                 # Use affine matrix to avoid polynomial Runge curling
             "min_cutoff": 1.2,                  # Responsive fixation filtering
             "beta": 8.0,                        # High beta = instantaneous zero-lag saccades
             "offset_x": 0,                      # Manual horizontal alignment nudge (Ctrl+Left/Right)
@@ -216,6 +218,8 @@ class TobiiMouseController:
                 json.dump(defaults, f, indent=4)
 
         self.config = defaults
+        self.edge_gain = float(defaults.get("edge_gain", 1.12))
+        self.use_affine = bool(defaults.get("use_affine", True))
         self.min_cutoff = float(defaults.get("min_cutoff", 1.2))
         self.beta = float(defaults.get("beta", 8.0))
         self.offset_x = int(defaults.get("offset_x", 0))
@@ -231,8 +235,19 @@ class TobiiMouseController:
             pass
 
     def map_to_pixel(self, x, y):
-        """Pure-Python high-speed coordinate projection."""
-        if self.poly_x is not None:
+        """Pure-Python high-speed coordinate projection with Edge Overdrive."""
+        # 1. Edge Overdrive expansion around center (0.5, 0.5)
+        if self.edge_gain != 1.0:
+            x = 0.5 + (x - 0.5) * self.edge_gain
+            y = 0.5 + (y - 0.5) * self.edge_gain
+
+        # 2. Coordinate Mapping
+        if self.use_affine and self.aff_x is not None:
+            ax = self.aff_x
+            ay = self.aff_y
+            px = int(ax[0]*x + ax[1]*y + ax[2]) + self.offset_x
+            py = int(ay[0]*x + ay[1]*y + ay[2]) + self.offset_y
+        elif self.poly_x is not None:
             cx = self.poly_x
             cy = self.poly_y
             x2 = x * x
@@ -249,6 +264,7 @@ class TobiiMouseController:
             px = int(x * self.screen_w) + self.offset_x
             py = int(y * self.screen_h) + self.offset_y
 
+        # 3. Primary screen bounds clamping
         px = max(0, min(self.screen_w - 1, px))
         py = max(0, min(self.screen_h - 1, py))
         return px, py

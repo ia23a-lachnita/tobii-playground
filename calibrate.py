@@ -106,17 +106,17 @@ class CalibrationAndFOVApp:
         self.root.bind("<Key-s>", lambda e: self.on_skip_pressed())
         self.root.bind("<Key-S>", lambda e: self.on_skip_pressed())
 
-        # 9 High-precision calibration targets (center, 4 edges, 4 corners)
+        # 9 Natural, comfortable calibration targets (no neck strain or ceiling gazing)
         self.targets = [
             (0.50, 0.50), # 1. Center
-            (0.50, 0.12), # 2. Top-Center
-            (0.12, 0.12), # 3. Top-Left
-            (0.88, 0.12), # 4. Top-Right
-            (0.10, 0.50), # 5. Mid-Left
-            (0.90, 0.50), # 6. Mid-Right
-            (0.12, 0.88), # 7. Bottom-Left
-            (0.50, 0.88), # 8. Bottom-Center
-            (0.88, 0.88), # 9. Bottom-Right
+            (0.50, 0.18), # 2. Top-Center
+            (0.18, 0.18), # 3. Top-Left
+            (0.82, 0.18), # 4. Top-Right
+            (0.16, 0.50), # 5. Mid-Left
+            (0.84, 0.50), # 6. Mid-Right
+            (0.18, 0.82), # 7. Bottom-Left
+            (0.50, 0.82), # 8. Bottom-Center
+            (0.82, 0.82), # 9. Bottom-Right
         ]
 
         self.current_idx = 0

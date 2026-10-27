@@ -4,6 +4,8 @@
     "continuous_mode_enabled": false,
     "min_cutoff": 1.2,
     "beta": 8.0,
+    "edge_gain": 1.12,
+    "use_affine": true,
     "offset_x": 0,
     "offset_y": 0
 }
