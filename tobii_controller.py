@@ -184,7 +184,7 @@ class TobiiMouseController:
                         raw_c = data["poly_coeffs"]
                         self.poly_x = [row[0] for row in raw_c]
                         self.poly_y = [row[1] for row in raw_c]
-                        print(f"[Calibration] Loaded 9-Point Polynomial Profile (Mean Error: ±{data.get('mean_error_pixels', 0):.1f} px)")
+                        print(f"[Calibration] Loaded Polynomial Profile ({data.get('num_points', 9)} points, Mean Error: ±{data.get('mean_error_pixels', 0):.1f} px)")
                     elif "matrix" in data:
                         raw_m = data["matrix"]
                         self.aff_x = [raw_m[0][0], raw_m[1][0], raw_m[2][0]]
