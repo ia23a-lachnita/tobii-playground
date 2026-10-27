@@ -184,12 +184,15 @@ class TobiiMouseController:
                         raw_c = data["poly_coeffs"]
                         self.poly_x = [row[0] for row in raw_c]
                         self.poly_y = [row[1] for row in raw_c]
-                        print(f"[Calibration] Loaded Polynomial Profile ({data.get('num_points', 9)} points, Mean Error: ±{data.get('mean_error_pixels', 0):.1f} px)")
-                    elif "matrix" in data:
+                    if "matrix" in data:
                         raw_m = data["matrix"]
                         self.aff_x = [raw_m[0][0], raw_m[1][0], raw_m[2][0]]
                         self.aff_y = [raw_m[0][1], raw_m[1][1], raw_m[2][1]]
-                        print(f"[Calibration] Loaded Affine Profile (Mean Error: ±{data.get('mean_error_pixels', 0):.1f} px)")
+
+                    if self.use_affine and self.aff_x is not None:
+                        print(f"[Calibration] Active: High-Stability Affine Profile (Mean Error: ±{data.get('mean_error_pixels', 0):.1f} px)")
+                    elif self.poly_x is not None:
+                        print(f"[Calibration] Active: Polynomial Profile ({data.get('num_points', 9)} points, Mean Error: ±{data.get('mean_error_pixels', 0):.1f} px)")
             except Exception as e:
                 print(f"[Calibration] Error loading {calib_file}: {e}")
         else:
@@ -235,11 +238,13 @@ class TobiiMouseController:
             pass
 
     def map_to_pixel(self, x, y):
-        """Pure-Python high-speed coordinate projection with Edge Overdrive."""
-        # 1. Edge Overdrive expansion around center (0.5, 0.5)
-        if self.edge_gain != 1.0:
-            x = 0.5 + (x - 0.5) * self.edge_gain
-            y = 0.5 + (y - 0.5) * self.edge_gain
+        """High-precision coordinate projection with Progressive Edge Overdrive."""
+        # 1. Progressive Edge Overdrive (zero distortion inside content, smooth reach on tabs/taskbar)
+        if self.edge_gain > 1.0:
+            dev_x = x - 0.5
+            x = 0.5 + dev_x * (1.0 + (self.edge_gain - 1.0) * (4.0 * dev_x * dev_x))
+            dev_y = y - 0.5
+            y = 0.5 + dev_y * (1.0 + (self.edge_gain - 1.0) * (4.0 * dev_y * dev_y))
 
         # 2. Coordinate Mapping
         if self.use_affine and self.aff_x is not None:
