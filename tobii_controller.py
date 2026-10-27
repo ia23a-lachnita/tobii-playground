@@ -305,7 +305,10 @@ class TobiiMouseController:
             self.continuous_mode = not self.continuous_mode
             status = "ENABLED" if self.continuous_mode else "PAUSED"
             print(f"\n>>> [Mouse Mode] Continuous Eye Tracking is now {status} <<<")
-            windll.kernel32.MessageBeep(0)
+            try:
+                windll.user32.MessageBeep(0)
+            except Exception:
+                pass
             self.filter_x.reset()
             self.filter_y.reset()
             self.dwell_start_time = None
@@ -336,7 +339,10 @@ class TobiiMouseController:
                         click_mouse('left')
                         self.last_click_time = now
                         self.dwell_start_time = None
-                        windll.kernel32.MessageBeep(0)
+                        try:
+                            windll.user32.MessageBeep(0)
+                        except Exception:
+                            pass
 
     def run(self):
         print("=" * 65)
